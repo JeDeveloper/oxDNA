@@ -49,7 +49,7 @@ test/OXPY/last_nucleotide.dat
 **/*pyc
 
 # Distribution / packaging
-.Python
+.Pyth7on
 develop-eggs/
 dist/
 downloads/
@@ -76,3 +76,5 @@ MANIFEST
 select_compute_arch_laptop.cmake
 cmake-build-debug
 .vscode
+
+.idea
