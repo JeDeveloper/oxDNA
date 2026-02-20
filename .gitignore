@@ -49,7 +49,7 @@ test/OXPY/last_nucleotide.dat
 **/*pyc
 
 # Distribution / packaging
-.Pyth7on
+.Python
 develop-eggs/
 dist/
 downloads/
@@ -73,8 +73,14 @@ MANIFEST
 # MacOS desktop servies
 .DS_Store
 
+# Pytest and coverage.py stuff
+**/.coverage*
+
 select_compute_arch_laptop.cmake
 cmake-build-debug
 .vscode
 
 .idea
+
+oxpy/_version.py
+src/oxpy/_version.py
