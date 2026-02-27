@@ -52,12 +52,14 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
 	char line[1024];
 	std::string cpp_line;
 	int lineno = 1;
+	// iterate lines in the weight file
 	while (inp.good()) {
 		getline (inp, cpp_line);
 
 		if (cpp_line.length() > 1000) throw oxDNAException ("(Weights.cpp) weight parser: error parsing line %d in %s. Lines cannot exceed 1000 characters.", lineno, filename);
 		strcpy (line, cpp_line.c_str());
 
+		// skip empty lines
 		if (strlen (line) == 0)
 			continue;
 
@@ -67,10 +69,11 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
 
 		if (* aux == '#') continue;
 
-		int tmp[_ndim], check = 0;
+		// alloc mem for current state coords and a temporary var to validate coord counts
+		int current_state_coords[_ndim], check = 0;
 		double tmpf;
 		for (int i = 0; i < _ndim; i ++) {
-			check += sscanf (aux, "%d", &(tmp[i]));
+			check += sscanf (aux, "%d", &(current_state_coords[i]));
 			while (isalnum(* aux))
 				aux ++;
 			while (isspace(* aux))
@@ -80,14 +83,23 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
 
 		if (check != _ndim + 1) throw oxDNAException  ("(Weights.cpp) weight parser: error parsing line %d in %s. Not enough numbers in line. Aborting", lineno, filename);
 
+		// 🔎 Check for overflow / invalid double
+		if (errno == ERANGE || !std::isfinite(tmpf)) {
+			throw oxDNAException(
+				"(Weights.cpp) parser: error parsing line %d of `%s`': weight out of range or invalid (%lf). Aborting\n",
+				lineno, filename, tmpf
+			);
+		}
+
 		// now we check that we are within the boundaries;
 		for (int i = 0; i < _ndim; i ++) {
-			if (tmp[i] < 0 || tmp[i] > (_sizes[i] + 2)) {
-				throw oxDNAException ("(Weights.cpp) parser: error parsing line %d of `%s`': index %d out of OrderParameters bounds. Aborting\n", lineno, filename, tmp[i]);
+			if (current_state_coords[i] < 0 || current_state_coords[i] > (_sizes[i] + 2)) {
+				throw oxDNAException ("(Weights.cpp) parser: error parsing line %d of `%s`': index %d out of OrderParameters bounds. Aborting\n", lineno, filename, current_state_coords[i]);
 			}
-			if (tmpf < -DBL_EPSILON) {
-				throw oxDNAException ("(Weights.cpp) parser: error parsing line %d of `%s`': weight %lf < 0. Cowardly refusing to proceed. Aborting\n", lineno, filename, tmpf);
-			}
+		}
+		// make sure weight is not negative
+		if (tmpf < -DBL_EPSILON) {
+			throw oxDNAException ("(Weights.cpp) parser: error parsing line %d of `%s`': weight %lf < 0. Cowardly refusing to proceed. Aborting\n", lineno, filename, tmpf);
 		}
 
 		int index = 0;
@@ -96,7 +108,7 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
 			for (int k = 0; k < i; k ++) {
 				pindex *= _sizes[k];
 			}
-			index += tmp[i] * pindex;
+			index += current_state_coords[i] * pindex;
 		}
 
 		if (index < _dim) _w[index] = tmpf;
