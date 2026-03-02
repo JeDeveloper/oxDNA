@@ -17,6 +17,9 @@
 RaspberryInteraction::RaspberryInteraction()  : BaseInteraction(){
     // we actually don't want to add interactions to map here, since for raspberry particles
     // this will depend somewhat on inputs
+    m_nPatchyBondEnergyCutoff = -0.1;
+    m_nDefaultAlpha = 0;
+
 }
 
 RaspberryInteraction::~RaspberryInteraction() = default;
@@ -30,11 +33,9 @@ void RaspberryInteraction::init() {
 
 void RaspberryInteraction::get_settings(input_file &inp) {
     BaseInteraction::get_settings(inp);
-    m_nPatchyBondEnergyCutoff = -0.1;
     getInputNumber(&inp, "PATCHY_bond_energy", &m_nPatchyBondEnergyCutoff, 0);
-    // default sigma value if it isn't specified
-    m_nDefaultAlpha = 0;
-    getInputNumber(&inp, "PATCHY_sigma", &m_nDefaultAlpha, 0);
+    // default alpha value if it isn't specified
+    getInputNumber(&inp, "PATCHY_alpha", &m_nDefaultAlpha, 0);
 }
 
 
