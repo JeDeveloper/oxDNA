@@ -51,46 +51,51 @@ struct HBParameter {
 
 	double cutoff;
 
-	HBParameter(void);
+	HBParameter();
 
 	void save_pair_as_parameter(int a, int b);
 
 	void set_current_value(int new_value) {
 		current_value = new_value;
 	}
-	int store_current_value(void) {
+	int store_current_value() {
 		stored_value = current_value;
 		return current_value;
 	}
-	int restore_current_value(void) {
+	int restore_current_value() {
 		current_value = stored_value;
 		return current_value;
 	}
 
-	double get_cutoff(void) {
+	double get_cutoff() const {
 		return cutoff;
 	}
 	void set_cutoff(double newc) {
 		cutoff = newc;
 	}
-	int get_state(void) {
+
+	/**
+	 *
+	 * @return accessor for current value of this order parameter
+	 */
+	int get_state() const {
 		return current_value;
 	}
 
-	int get_max_state(void) {
+	int get_max_state() const {
 		return counted_pairs.size();
 	}
 
-	std::string get_name(void) {
+	std::string get_name() const {
 		return name;
 	}
-	void set_name(std::string newname) {
+	void set_name(const std::string &newname) {
 		name = newname;
 	}
 
 	int plus_pair(base_pair& bp, double energy = -16);
 	int minus_pair(base_pair& bp);
-	void reset(void) {
+	void reset() {
 		current_value = 0;
 	}
 
@@ -125,10 +130,10 @@ struct MinDistanceParameter {
 	/// interfaces between states
 	vector<double> interfaces;
 
-	MinDistanceParameter(void);
+	MinDistanceParameter();
 	void save_pair_as_parameter(int a, int b);
 
-	void reset(void) {
+	void reset() {
 		current_value = 1.;
 		state_index = -1;
 	}
@@ -137,30 +142,30 @@ struct MinDistanceParameter {
 		current_value = new_value;
 	}
 
-	double store_current_value(void) {
+	double store_current_value() {
 		stored_value = current_value;
 		stored_state_index = state_index;
 		return current_value;
 	}
 
-	double restore_current_value(void) {
+	double restore_current_value() {
 		state_index = stored_state_index;
 		current_value = stored_value;
 		return current_value;
 	}
 
-	double get_state(void) {
+	double get_state() const {
 		return current_value;
 	}
 
-	int get_state_index(void) {
+	int get_state_index() const {
 		return state_index;
 	}
 
-	std::string get_name(void) {
+	std::string get_name() const {
 		return name;
 	}
-	void set_name(std::string newname) {
+	void set_name(const std::string &newname) {
 		name = newname;
 	}
 
@@ -260,16 +265,24 @@ protected:
 	std::map<std::string, int> _hb_parnames;
 	std::map<std::string, int> _dist_parnames;
 
+	// hydrogen bond count order parameters
 	vector<HBParameter> _hb_parameters;
+	// number of hydrogen bond order parameters
 	int _hb_parameters_count;
-	int *_hb_states;
+	// current state value of each hydrogen bond order parameter
+	std::vector<int> _hb_states;
 
+	// minimum distance order parameters
 	vector<MinDistanceParameter> _distance_parameters;
+	// number of minimum distance order parameters
 	int _distance_parameters_count;
-	double *_distance_states;
+	// current values for each distance state
+	std::vector<double> _distance_states;
 
+	// total number of states produced by this set of order param
 	int _all_states_count;
-	int * _all_states;
+	// current values for all states
+	std::vector<int> _all_states;
 
 	int _log_level;
 
@@ -277,15 +290,19 @@ public:
 	OrderParameters();
 
 	///access functions
-	int get_hb_parameters_count() {
+	int get_hb_parameters_count() const {
 		return _hb_parameters_count;
 	}
 
-	int get_distance_parameters_count() {
+	int get_distance_parameters_count() const {
 		return _distance_parameters_count;
 	}
 
-	int get_all_parameters_count() {
+	/**
+	 *
+	 * @return the total number of order parameters in this
+	 */
+	int get_all_parameters_count() const {
 		//return _distance_parameters_count + _hb_parameters_count;
 		return _all_states_count;
 	}
@@ -383,22 +400,21 @@ public:
 	 * @param param_id
 	 * @return values of ops (indexed by ther id_numbers)
 	 */
-	int get_hb_parameter(int param_id) {
+	int get_hb_parameter(int param_id) const {
 		if(param_id < _hb_parameters_count)
 		return _hb_parameters[param_id].get_state();
 		else
 		return -1;
 	}
 
-	double get_hb_cutoff(int param_id)
-			{
+	double get_hb_cutoff(int param_id) const {
 		if(param_id < _hb_parameters_count)
 		return _hb_parameters[param_id].get_cutoff();
 		else
 		return HB_CUTOFF;
 	}
 
-	double get_distance_parameter(int param_id) {
+	double get_distance_parameter(int param_id) const {
 		if(param_id < _distance_parameters_count)
 		return _distance_parameters[param_id].get_state();
 		else
@@ -434,25 +450,26 @@ public:
 	 * @warning the returned array can get
 	 * @warning overwritten by the subsequent function
 	 */
-	int * get_hb_states(void);
+	vector<int> &get_hb_states() ;
 
-	int * get_all_states(void);
+	vector<int> &get_all_states();
 
 	/// return maximal values that the bond
 	/// order parameters can have; warning,
 	/// the array can get overwritten by
 	/// the previous function
-	int * get_max_hb_states(void);
-	int * get_state_sizes(void);
-	double *get_distance_states(void);
+	const vector<int> &get_max_hb_states();
 
-	void print(void) {
-		int * states;
-		states = get_hb_states();
+	const vector<int> &get_state_sizes();
+
+	vector<double> &get_distance_states();
+
+	void print() {
+		std::vector<int> states = get_hb_states();
 		for(int i = 0; i < _hb_parameters_count; i++) {
 			printf("%d ", states[i]);
 		}
-		double * dists = get_distance_states();
+		std::vector<double> dists = get_distance_states();
 		for(int i = 0; i < _distance_parameters_count; i++)
 			printf("%g ", dists[i]);
 		printf("\n");
@@ -461,12 +478,12 @@ public:
 	void sprintf_names_and_values(char * str) {
 		char tmp[1024];
 		*str = '\0';
-		int * states = get_hb_states();
+		std::vector<int> states = get_hb_states();
 		for(int i = 0; i < _hb_parameters_count; i++) {
 			sprintf(tmp, "%s: %d; ", get_name_from_hb_id(i).c_str(), states[i]);
 			strcat(str, tmp);
 		}
-		double * dists = get_distance_states();
+		std::vector<double> dists = get_distance_states();
 		for(int i = 0; i < _distance_parameters_count; i++) {
 			sprintf(tmp, "%s: %12.9f; ", get_name_from_distance_id(i).c_str(), dists[i]);
 			strcat(str, tmp);
@@ -490,9 +507,9 @@ public:
 	void remove_hb(int a, int b);
 
 	/// to be called in MC or MD cycles functions
-	void reset(void); ///sets all hb order params to 0
-	void store(void); ///stores values of all ops
-	void restore(void); ///reloads saved values of all ops
+	void reset(); ///sets all hb order params to 0
+	void store(); ///stores values of all ops
+	void restore(); ///reloads saved values of all ops
 
 	/**
 	 * @brief Load ops from file.
@@ -793,10 +810,10 @@ public:
 			}
 		}
 
-		if (_hb_parameters_count > 0) _hb_states = new int[_hb_parameters_count];
-		if (_distance_parameters_count > 0) _distance_states = new double[_distance_parameters_count];
+		if (_hb_parameters_count > 0) _hb_states.resize(_hb_parameters_count);
+		if (_distance_parameters_count > 0) _distance_states.resize(_distance_parameters_count);
 		_all_states_count = _hb_parameters_count + _distance_parameters_count;
-		if (_all_states_count > 0) _all_states = new int[_all_states_count];
+		if (_all_states_count > 0) _all_states.resize(_all_states_count);
 
 		OX_LOG(_log_level, " File %s parsed; found %d hb_dim, %d dist_dim", _external_filename, _hb_parameters_count, _distance_parameters_count);
 

@@ -74,14 +74,16 @@ OrderParameters::OrderParameters() {
 	_hb_parameters_count = 0;
 	_distance_parameters_count = 0;
 	_all_states_count = 0;
-	_hb_states = NULL;
-	_distance_states = NULL;
-	_all_states = NULL;
 	_log_level = Logger::LOG_INFO;
 }
 
-//adds given bonded pair to all values of order parameters
-void OrderParameters::add_hb(int a, int b,double energy) {
+/**
+ * adds given bonded pair to all values of order parameters
+ * @param a first nucleotide index
+ * @param b second nucleotide index
+ * @param energy ???
+ */
+void OrderParameters::add_hb(int a, int b, double energy) {
 	base_pair npair(a, b);
 	if (a > b) {
 		npair.first = b;
@@ -103,7 +105,10 @@ void OrderParameters::remove_hb(int a, int b) {
 	}
 }
 
-void OrderParameters::reset(void) {
+/**
+ * set current value of all order parameters to 0
+ */
+void OrderParameters::reset() {
 	for (int i = 0; i < _hb_parameters_count; i++) {
 		_hb_parameters[i].reset();
 	}
@@ -112,7 +117,7 @@ void OrderParameters::reset(void) {
 	}
 }
 
-void OrderParameters::store(void) {
+void OrderParameters::store() {
 	for (int i = 0; i < _hb_parameters_count; i++) {
 		_hb_parameters[i].store_current_value();
 	}
@@ -121,7 +126,7 @@ void OrderParameters::store(void) {
 	}
 }
 
-void OrderParameters::restore(void) {
+void OrderParameters::restore() {
 	for (int i = 0; i < _hb_parameters_count; i++) {
 		_hb_parameters[i].restore_current_value();
 	}
@@ -147,7 +152,7 @@ int OrderParameters::get_distpar_id_from_name(const char *name) {
 		return -1;
 }
 
-int *OrderParameters::get_state_sizes(void) {
+const vector<int> &OrderParameters::get_state_sizes() {
 	int i = 0, j = 0;
 	
 	// the +1 is needed in the following line...
@@ -160,39 +165,46 @@ int *OrderParameters::get_state_sizes(void) {
 }
 
 
-int *OrderParameters::get_max_hb_states(void) {
+const vector<int> &OrderParameters::get_max_hb_states() {
 	for (int i = 0; i < _hb_parameters_count; i++)
 		_hb_states[i] = _hb_parameters[i].get_max_state();
 
 	return _hb_states;
 }
 
-
-int *OrderParameters::get_hb_states(void) {
-	for (int i = 0; i < _hb_parameters_count; i++)
+/**
+ * assign _hb_states to the current state of hb order parameters, then return it
+ * @return current state of hb order parameters
+ */
+vector<int> &OrderParameters::get_hb_states()  {
+	for (int i = 0; i < _hb_parameters_count; i++) {
+		// get current state vals
 		_hb_states[i] = _hb_parameters[i].get_state();
-
+	}
 	return _hb_states;
 }
 
-
-double * OrderParameters::get_distance_states(void) {
+/**
+ *
+ * @return current value for distance states (phsical distance, not state index of distance)
+ */
+vector<double> &OrderParameters::get_distance_states() {
 	for (int i = 0; i < _distance_parameters_count; i++)
 		_distance_states[i] = _distance_parameters[i].get_state();
 
 	return _distance_states;
 }
 
-int *OrderParameters::get_all_states(void) {
+/**
+ *
+ * @return all current value for all states
+ */
+vector<int> &OrderParameters::get_all_states() {
 	int i = 0, j = 0;
 	for (i = 0; i < _hb_parameters_count; i++) _all_states[i] = _hb_parameters[i].get_state();
 	for (j = 0; j < _distance_parameters_count; j++) _all_states[i + j] = _distance_parameters[j].get_state_index();
 	return _all_states;
 }
 
-OrderParameters::~OrderParameters() {
-	delete[] _hb_states;
-	delete[] _distance_states;
-	delete[] _all_states;
-}
+OrderParameters::~OrderParameters() = default;
 

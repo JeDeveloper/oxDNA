@@ -14,15 +14,9 @@
 Weights::Weights () {
 	_dim = -1;
 	_ndim = -1;
-	_w = nullptr;
-	_sizes = nullptr;
 }
 
-Weights::~Weights () {
-	delete [] _w;
-	//if (_ndim > 1) delete [] _sizes;
-	free (_sizes);
-}
+Weights::~Weights () = default;
 
 /**
  * loads weights from a file
@@ -40,19 +34,18 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
 	if (!inp.good()) throw oxDNAException ("(Weights.cpp) parser: Can't read file `%s\'. Aborting", filename);
 
 	// initialise the array
-	_ndim = op->get_all_parameters_count ();
-	_sizes = (int *) calloc ((size_t)_ndim, sizeof (int));
-
-    memcpy (_sizes, op->get_state_sizes(), ((size_t)_ndim) * sizeof (int));
+	_ndim = op->get_all_parameters_count(); // count order parameters
+	_sizes.assign(op->get_state_sizes().data(), op->get_state_sizes().data() + _ndim); // list order parameter lengths
 
     _dim = 1;
+	// calculate the dimension of linear array by multiplying together the sizes of each order parameter
     for (int i = 0; i < _ndim; i ++) _dim *= _sizes[i];
 
 	if (_dim > WEIGHT_MAT_MAX_SIZE) {
 		throw oxDNAException("Requesting to allocate a weight matrix of size %d, which is too big. You can increase the max weight matrix size by editing Weights.h if you really want to.", _dim);
 	}
 
-    _w = new double[_dim];
+    _w.resize(_dim);
     for (int i = 0; i < _dim; i ++)  _w[i] = default_weight;
 
     OX_LOG (Logger::LOG_INFO, "(Weights.cpp) weights found; O.P. dim: %d, tot size: %d", _ndim, _dim);
@@ -118,7 +111,7 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
 
 void Weights::print() {
 	printf ("######## weights ##################\n");
-	int tmp[_ndim];
+	std::vector<int> tmp(_ndim);
 	for (int i = 0; i < _dim; i ++) {
 		for (int j = 0; j < _ndim; j ++) {
 			int pindex = 1;
@@ -132,27 +125,38 @@ void Weights::print() {
 	printf ("###################################\n");
 }
 
-double Weights::get_weight_by_index (int index) {
+/**
+ *
+ * @param index position in linearized weight matrix
+ * @return value of linearized weight matrix at index
+ */
+double Weights::get_weight_by_index (const int index) const {
 	return _w[index];
 }
 
-double Weights::get_weight(int * arg, int * ptr) {
+/**
+ * get weight for state and assigns value of *ptr to the index in the linearized weight matrix(?)
+ * @param state state
+ * @param ptr pointer to memory to recieve index in linearized weight matrix
+ * @return weight at state
+ */
+double Weights::get_weight(const vector<int> &state, int * ptr) const {
 	int index = 0;
 	for (int i = 0; i < _ndim; i ++) {
-		assert (arg[i] < _sizes[i]);
+		assert (state[i] < _sizes[i]);
 		int pindex = 1;
 		for (int k = 0; k < i; k ++) {
 			pindex *= _sizes[k];
 		}
-		index += arg[i] * pindex;
+		index += state[i] * pindex;
 	}
 	if (index >= _dim) {
 		printf ("index > dim: %i > %i\n", index, _dim);
 		for (int k = 0; k<_ndim; k ++) {
-			printf ("%d ",arg[k]);
+			printf ("%d ",state[k]);
 		}
 		for (int k = 0; k<_ndim; k ++) {
-			printf ("%d ",arg[k]);
+			printf ("%d ",state[k]);
 		}
 		printf ("\n");
 	}
@@ -160,23 +164,28 @@ double Weights::get_weight(int * arg, int * ptr) {
 	return _w[index];
 }
 
-double Weights::get_weight(int * arg) {
+/**
+ * gets the weight associated with a system state
+ * @param state state, represented as a series of values for order parameters
+ * @return weight associated with state
+ */
+double Weights::get_weight(const vector<int> &state) const {
 	int index = 0;
 	for (int i = 0; i < _ndim; i ++) {
-		assert (arg[i] < _sizes[i]);
+		assert (state[i] < _sizes[i]);
 		int pindex = 1;
 		for (int k = 0; k < i; k ++) {
 			pindex *= _sizes[k];
 		}
-		index += arg[i] * pindex;
+		index += state[i] * pindex;
 	}
 	if (index >= _dim) {
 		printf ("index > dim: %i > %i\n", index, _dim);
 		for (int k = 0; k<_ndim; k ++) {
-			printf ("%d ",arg[k]);
+			printf ("%d ",state[k]);
 		}
 		for (int k = 0; k<_ndim; k ++) {
-			printf ("%d ",arg[k]);
+			printf ("%d ",state[k]);
 		}
 		printf ("\n");
 	}
@@ -184,12 +193,23 @@ double Weights::get_weight(int * arg) {
 	return _w[index];
 }
 
-double Weights::get_weight(OrderParameters * arg) {
+/**
+ * wrapper for get_weight(std::vector<int>&)
+ * @param state
+ * @return
+ */
+double Weights::get_weight(OrderParameters &state) const {
 	//return get_weight (arg->get_hb_states());
-	return get_weight (arg->get_all_states());
+	return get_weight (state.get_all_states());
 }
 
-double Weights::get_weight(OrderParameters * arg, int * ptr) {
+/**
+ * wrapper for get_weight(const std::vector<int>&, int* ptr)
+ * @param state
+ * @param ptr
+ * @return
+ */
+double Weights::get_weight(OrderParameters &state, int * ptr) const {
 	//return get_weight (arg->get_hb_states(), ptr);
-	return get_weight (arg->get_all_states(), ptr);
+	return get_weight (state.get_all_states(), ptr);
 }

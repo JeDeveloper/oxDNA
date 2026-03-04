@@ -16,19 +16,22 @@
 /// Weight class
 class Weights {
 protected:
-	double * _w;
+	// weight matrix, linearized
+	std::vector<double> _w;
+	// total size of the linearized weight matrix
 	int _dim;
+	// number of dimensions of the weight matrix
 	int _ndim;
-	int * _sizes;
+	std::vector<int> _sizes;
 public:
 	Weights();
 	~Weights();
-	int get_dim (void) const { return _dim; }
-	double get_weight_by_index (int);
-	double get_weight(int *);
-	double get_weight(int *, int *);
-	double get_weight(OrderParameters *);
-	double get_weight(OrderParameters *, int *);
+	int get_dim () const { return _dim; }
+	double get_weight_by_index (int) const;
+	double get_weight(const vector<int> &state) const;
+	double get_weight(const vector<int> &, int *) const;
+	double get_weight(OrderParameters &) const;
+	double get_weight(OrderParameters &, int *) const;
 	void init(const char *, OrderParameters *, bool safe, double default_weight);
 	void print();
 };

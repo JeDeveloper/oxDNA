@@ -1439,7 +1439,7 @@ void VMMC_CPUBackend::sim_step() {
 		windex = oldwindex;
 		weight = oldweight;
 		if(_have_us) {
-			weight = _w.get_weight(&_op, &windex);
+			weight = _w.get_weight(_op, &windex);
 			pprime *= weight / oldweight;
 		}
 
