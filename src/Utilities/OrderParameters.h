@@ -313,10 +313,9 @@ public:
 		int ii = 0;
 		int op_count = get_distance_parameters_count();
 		for(int op_ind = 0; op_ind < op_count; op_ind++) {
-			for(vector_of_pairs::iterator i = _distance_parameters[op_ind].counted_pairs.begin();
-					i != _distance_parameters[op_ind].counted_pairs.end(); i++) {
-				out1[ii] = (*i).first;
-				out2[ii] = (*i).second;
+			for(auto & counted_pair : _distance_parameters[op_ind].counted_pairs) {
+				out1[ii] = counted_pair.first;
+				out2[ii] = counted_pair.second;
 				ii++;
 			}
 		}
@@ -326,10 +325,9 @@ public:
 		int ii = 0;
 		int op_count = get_hb_parameters_count();
 		for(int op_ind = 0; op_ind < op_count; op_ind++) {
-			for(set_of_pairs::iterator i = _hb_parameters[op_ind].counted_pairs.begin();
-					i != _hb_parameters[op_ind].counted_pairs.end(); i++) {
-				out1[ii] = (*i).first;
-				out2[ii] = (*i).second;
+			for(const auto & counted_pair : _hb_parameters[op_ind].counted_pairs) {
+				out1[ii] = counted_pair.first;
+				out2[ii] = counted_pair.second;
 				ii++;
 			}
 		}
@@ -339,7 +337,7 @@ public:
 		int op_count = get_distance_parameters_count();
 		for(int op_ind = 0; op_ind < op_count; op_ind++) {
 			counts[op_ind] = 0;
-			for(vector_of_pairs::iterator i = _distance_parameters[op_ind].counted_pairs.begin();
+			for(auto i = _distance_parameters[op_ind].counted_pairs.begin();
 					i != _distance_parameters[op_ind].counted_pairs.end(); i++) {
 				counts[op_ind]++;
 			}
@@ -350,7 +348,7 @@ public:
 		int op_count = get_hb_parameters_count();
 		for(int op_ind = 0; op_ind < op_count; op_ind++) {
 			counts[op_ind] = 0;
-			for(set_of_pairs::iterator i = _hb_parameters[op_ind].counted_pairs.begin();
+			for(auto i = _hb_parameters[op_ind].counted_pairs.begin();
 					i != _hb_parameters[op_ind].counted_pairs.end(); i++) {
 				counts[op_ind]++;
 			}
@@ -361,7 +359,7 @@ public:
 		int ii = 0;
 		int op_count = get_distance_parameters_count();
 		for(int op_ind = 0; op_ind < op_count; op_ind++) {
-			for(vector_of_pairs::iterator i = _distance_parameters[op_ind].counted_pairs.begin();
+			for(auto i = _distance_parameters[op_ind].counted_pairs.begin();
 					i != _distance_parameters[op_ind].counted_pairs.end(); i++) {
 				ii++;
 			}
@@ -373,7 +371,7 @@ public:
 		int ii = 0;
 		int op_count = get_hb_parameters_count();
 		for(int op_ind = 0; op_ind < op_count; op_ind++) {
-			for(set_of_pairs::iterator i = _hb_parameters[op_ind].counted_pairs.begin();
+			for(auto i = _hb_parameters[op_ind].counted_pairs.begin();
 					i != _hb_parameters[op_ind].counted_pairs.end(); i++) {
 				ii++;
 			}
@@ -385,9 +383,9 @@ public:
 	vector_of_pairs get_hb_particle_list() {
 		vector_of_pairs inds;
 		for(int i = 0; i < _hb_parameters_count; i++) {
-			for(set_of_pairs::iterator j = _hb_parameters[i].counted_pairs.begin(); j != _hb_parameters[i].counted_pairs.end(); j++) {
-				int p_ind = (*j).first;
-				int q_ind = (*j).second;
+			for(const auto & counted_pair : _hb_parameters[i].counted_pairs) {
+				int p_ind = counted_pair.first;
+				int q_ind = counted_pair.second;
 				inds.push_back(std::make_pair(p_ind, q_ind));
 			}
 		}
@@ -409,16 +407,16 @@ public:
 
 	double get_hb_cutoff(int param_id) const {
 		if(param_id < _hb_parameters_count)
-		return _hb_parameters[param_id].get_cutoff();
+			return _hb_parameters[param_id].get_cutoff();
 		else
-		return HB_CUTOFF;
+			return HB_CUTOFF;
 	}
 
 	double get_distance_parameter(int param_id) const {
 		if(param_id < _distance_parameters_count)
-		return _distance_parameters[param_id].get_state();
+			return _distance_parameters[param_id].get_state();
 		else
-		return -1;
+			return -1;
 	}
 
 	/**
@@ -428,7 +426,7 @@ public:
 	 * @return
 	 */
 	int get_hbpar_id_from_name(const char *name);
-	const std::string get_name_from_hb_id(int id) {
+	std::string get_name_from_hb_id(int id) const {
 		return _hb_parameters[id].get_name();
 	}
 
@@ -439,7 +437,7 @@ public:
 	 * @return
 	 */
 	int get_distpar_id_from_name(const char *name);
-	const std::string get_name_from_distance_id(int id) {
+	std::string get_name_from_distance_id(int id) const {
 		return _distance_parameters[id].get_name();
 	}
 
@@ -653,35 +651,6 @@ public:
 						}
 					}
 
-					/*
-					 int paira, pairb;
-					 char strdir[512];
-					 char pairname[512];
-					 int pairid = 1;
-					 sprintf(pairname, "pair%d", pairid);
-
-					 while (getInputString(&input, pairname, strdir, 0) == KEY_FOUND) {
-					 //fprintf(stderr, "Loaded %s\n", strdir);
-					 tmpi = sscanf(strdir, "%d,%d", &paira, &pairb);
-
-					 if (tmpi != 2)
-					 throw oxDNAException("could not parse pairs in HB parameter in order parameters file");
-					 if (paira >= max_N || pairb >= max_N)
-					 throw oxDNAException("particle index out of range while parsing order parameters");
-
-					 OX_LOG(Logger::LOG_INFO, "--> adding HB pair %d %d ", paira, pairb);
-
-					 newpar.save_pair_as_parameter(paira, pairb);
-
-					 if (particles[paira]->btype + particles[pairb]->btype != 3)
-					 OX_LOG(Logger::LOG_WARNING, "HB pair %d %d not complementary, but still an order parameter", paira, pairb);
-
-					 pairid++;
-					 sprintf(pairname, "pair%d", pairid);
-					 }
-					 if (pairid == 1) throw oxDNAException("Error, did not find any parameters to parse. Are pairs correctly numbered?");
-					 */
-
 					newpar.set_name (name_str);
 
 					_hb_parameters.push_back(newpar);
@@ -749,24 +718,6 @@ public:
 						}
 					}
 
-					/*
-					 // parsing of the interfaces...
-					 newpar.n_states = 0;
-					 if (getInputString (&input, "interfaces", strdir, 0) == KEY_FOUND) {
-					 // we need to parse the interfaces; we expect at least one float number.
-					 char * aux = strtok (strdir, ",");
-					 int i = 0;
-					 while (aux != NULL) {
-					 double tmpf;
-					 sscanf(aux, "%lf", &tmpf);
-					 newpar.interfaces.push_back(tmpf);
-					 OX_LOG(_log_level, " ---> found interface %i; %lf", i, newpar.interfaces[i]);
-					 i ++;
-					 aux = strtok (NULL, ",");
-					 }
-					 newpar.n_states = i + 1; // the number of states is the number of interfaces + 1;
-					 }
-					 */
 					string strdir;
 					if (getInputString (&input, "interfaces", strdir, 0) == KEY_FOUND) {
 						std::vector<string> interfaces = Utils::split (strdir.c_str(), ',');
@@ -776,20 +727,6 @@ public:
 						}
 						newpar.n_states = interfaces.size() + 1;
 					}
-
-					//optional use of COM-COM distance instead of base-base distance
-					/*
-					 char tmpstr2[256];
-					 if (getInputString(&input, "use_COM", tmpstr2, 0) == KEY_FOUND) {
-					 unsigned int COM=0;
-					 sscanf(tmpstr2, "%u", &COM);
-					 if(COM==0) { newpar._use_COM = false; }
-					 else if(COM==1) {
-					 newpar._use_COM = true;
-					 OX_LOG (_log_level, "using COM-COM distances instead of base-base");
-					 }
-					 else { OX_LOG (_log_level, "unsupported value for use_COM"); }
-					 }*/
 
 					// optional use of COM-COM distance instead of base-base distance
 					if (getInputBool(&input, "use_COM", &newpar._use_COM, 0) == KEY_FOUND) {
