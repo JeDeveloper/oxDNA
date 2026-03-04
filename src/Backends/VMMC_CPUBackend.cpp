@@ -1592,7 +1592,7 @@ void VMMC_CPUBackend::check_ops() {
 	//state = (int *) malloc(_op.get_hb_parameters_count() * sizeof(int));
 	//memcpy(state, _op.get_hb_states(), _op.get_hb_parameters_count() * sizeof(int));
 	state = (int *) malloc(_op.get_all_parameters_count() * sizeof(int));
-	memcpy(state, _op.get_all_states(), _op.get_all_parameters_count() * sizeof(int));
+	memcpy(state, _op.get_all_states().data(), _op.get_all_parameters_count() * sizeof(int));
 	_op.reset();
 
 	int i, j;
@@ -1612,7 +1612,7 @@ void VMMC_CPUBackend::check_ops() {
 	}
 	_op.fill_distance_parameters(_particles, _box.get());
 
-	int * new_state = _op.get_all_states();
+	int * new_state = _op.get_all_states().data();
 	int check = 0;
 
 	for(i = 0; i < _op.get_all_parameters_count(); i++) {
@@ -1636,7 +1636,6 @@ void VMMC_CPUBackend::check_ops() {
 	}
 
 	free(state);
-	return;
 }
 
 void VMMC_CPUBackend::_update_ops() {
@@ -1668,9 +1667,6 @@ void VMMC_CPUBackend::_update_ops() {
 
 	// distances
 	_op.fill_distance_parameters(_particles, _box.get());
-
-	//exit(-1);
-	return;
 }
 
 void VMMC_CPUBackend::_print_pos(int id) {
@@ -1712,7 +1708,7 @@ inline void VMMC_CPUBackend::check_overlaps() {
 
 char * VMMC_CPUBackend::get_op_state_str() {
 	if(_have_us) {
-		int * state = _op.get_all_states();
+		std::vector<int> state = _op.get_all_states();
 		char * aux;
 		aux = (char *) _state_str;
 		for(int i = 0; i < _op.get_all_parameters_count(); i++) {
@@ -1968,7 +1964,7 @@ void VMMC_CPUBackend::fix_diffusion() {
 
 	// check of order parameter
 	std::vector<int> state(_op.get_all_parameters_count());
-	state.insert(state.begin(), _op.get_all_states(), _op.get_all_states() + _op.get_all_parameters_count());
+	state.insert(state.begin(), _op.get_all_states().data(), _op.get_all_states().data() + _op.get_all_parameters_count());
 	_op.reset();
 
 	SimBackend::fix_diffusion();
@@ -1988,7 +1984,7 @@ void VMMC_CPUBackend::fix_diffusion() {
 	}
 	_op.fill_distance_parameters(_particles, _box.get());
 
-	int *new_state = _op.get_all_states();
+	int *new_state = _op.get_all_states().data();
 
 	int check = 0;
 	for(int i = 0; i < _op.get_all_parameters_count(); i++) {
