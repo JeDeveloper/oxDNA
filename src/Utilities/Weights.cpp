@@ -48,6 +48,10 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
     _dim = 1;
     for (int i = 0; i < _ndim; i ++) _dim *= _sizes[i];
 
+	if (_dim > WEIGHT_MAT_MAX_SIZE) {
+		throw oxDNAException("Requesting to allocate a weight matrix of size %d, which is too big. You can increase the max weight matrix size by editing Weights.h if you really want to.", _dim);
+	}
+
     _w = new double[_dim];
     for (int i = 0; i < _dim; i ++)  _w[i] = default_weight;
 

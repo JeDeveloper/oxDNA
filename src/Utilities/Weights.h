@@ -10,6 +10,9 @@
 
 #include "OrderParameters.h"
 
+// if you really need to you can go above this
+#define WEIGHT_MAT_MAX_SIZE 1e8
+
 /// Weight class
 class Weights {
 protected:
