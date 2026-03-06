@@ -161,8 +161,20 @@ double Weights::get_weight(const vector<int> &state, int * ptr) const {
 		printf ("\n");
 	}
 	* ptr = index;
-	// use bounds checking
-	return _w.at(index);
+	if (index >= _dim) {
+		// build a readable string representation of `state`
+		std::ostringstream ss;
+		ss << "(";
+		for (int k = 0; k < _ndim; ++k) {
+			if (k) ss << ",";
+			ss << state[k];
+		}
+		ss << ")";
+
+		throw oxDNAException("Flattened value of state %s (%d) is outside the bounds of linearized weight matrix (length %d).",
+			ss.str().c_str() ,index, _dim);
+	}
+	return _w[index];
 }
 
 /**
