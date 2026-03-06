@@ -196,9 +196,7 @@ FFS_MD_CPUBackend::FFS_MD_CPUBackend() :
 	_sqr_rcut = -1;
 }
 
-FFS_MD_CPUBackend::~FFS_MD_CPUBackend() {
-
-}
+FFS_MD_CPUBackend::~FFS_MD_CPUBackend() = default;
 
 void FFS_MD_CPUBackend::get_settings(input_file &inp) {
 	MD_CPUBackend::get_settings(inp);
@@ -241,12 +239,12 @@ number FFS_MD_CPUBackend::pair_interaction_nonbonded_DNA_with_op(BaseParticle *p
 	return energy;
 }
 
-void FFS_MD_CPUBackend::_ffs_compute_forces(void) {
+void FFS_MD_CPUBackend::_ffs_compute_forces() {
 	_interaction->begin_energy_computation();
 
 	_U = (number) 0;
 	for(auto p: _particles) {
-		typename vector<ParticlePair>::iterator it = p->affected.begin();
+		auto it = p->affected.begin();
 		for(; it != p->affected.end(); it++) {
 			if(it->first == p) {
 				_U += _interaction->pair_interaction_bonded(it->first, it->second, true, true);
@@ -349,19 +347,18 @@ void FFS_MD_CPUBackend::init_ffs_from_file(const char *fname) {
 	fclose(fin);
 }
 
-char * FFS_MD_CPUBackend::get_op_state_str(void) {
-	int * state = _op.get_hb_states();
-	char * aux;
-	aux = (char *) _state_str;
+char * FFS_MD_CPUBackend::get_op_state_str() {
+	std::vector<int> state = _op.get_hb_states();
+	char *aux = static_cast<char *>(_state_str);
 	for(int i = 0; i < _op.get_hb_parameters_count(); i++) {
 		sprintf(aux, "%2d ", state[i]);
-		aux = (char *) _state_str + strlen(_state_str);
+		aux = static_cast<char *>(_state_str) + strlen(_state_str);
 	}
 
-	double * dstate = _op.get_distance_states();
+	std::vector<double> dstate = _op.get_distance_states();
 	for(int i = 0; i < _op.get_distance_parameters_count(); i++) {
 		sprintf(aux, "%5.2f ", dstate[i]);
-		aux = (char *) _state_str + strlen(_state_str);
+		aux = static_cast<char *>(_state_str) + strlen(_state_str);
 	}
 	return _state_str;
 }
@@ -371,7 +368,7 @@ void FFS_MD_CPUBackend::print_observables() {
 	MDBackend::print_observables();
 }
 
-bool FFS_MD_CPUBackend::check_stop_conditions(void) {
+bool FFS_MD_CPUBackend::check_stop_conditions() {
 	//check if any of the stop conditions is true
 	for(auto i = _conditions.begin(); i != _conditions.end(); i++) {
 		if((*i).eval_condition(&(_op))) {

@@ -13,6 +13,7 @@ HBParameter::HBParameter() {
 	stored_value = 0;
 	name = "unnamed_parameter";
 	cutoff = HB_CUTOFF;
+	max_value = -1;
 }
 
 int HBParameter::plus_pair(base_pair& bp,double energy) {

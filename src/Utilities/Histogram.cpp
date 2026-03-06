@@ -35,7 +35,7 @@ Histogram::~Histogram() {
 void Histogram::init(OrderParameters *op, double *temps, int ntemps) {
 	_ndim = op->get_all_parameters_count();
 	_sizes = new int[_ndim];
-	memcpy(_sizes, op->get_state_sizes(), _ndim * sizeof(int));
+	memcpy(_sizes, op->get_state_sizes().data(), _ndim * sizeof(int));
 	_dim = 1;
 	for(int i = 0; i < _ndim; i++) {
 		_dim *= _sizes[i];
@@ -65,7 +65,7 @@ void Histogram::init(OrderParameters * op, std::vector<number> temps) {
 void Histogram::init(OrderParameters *op) {
 	_ndim = op->get_all_parameters_count();
 	_sizes = new int[_ndim];
-	memcpy(_sizes, op->get_state_sizes(), _ndim * sizeof(int));
+	memcpy(_sizes, op->get_state_sizes().data(), _ndim * sizeof(int));
 	_dim = 1;
 	for(int i = 0; i < _ndim; i++) {
 		_dim *= _sizes[i];
@@ -89,7 +89,7 @@ void Histogram::init(const char *filename, OrderParameters *op, double *temps, i
 	// initialise the array
 	_ndim = op->get_all_parameters_count();
 	_sizes = new int[_ndim];
-	memcpy(_sizes, op->get_state_sizes(), _ndim * sizeof(int));
+	memcpy(_sizes, op->get_state_sizes().data(), _ndim * sizeof(int));
 
 	_dim = 1;
 	for(int i = 0; i < _ndim; i++) {
@@ -218,7 +218,7 @@ void Histogram::init(const char *filename, OrderParameters *op) {
 	// initialise the array
 	_ndim = op->get_all_parameters_count();
 	_sizes = new int[_ndim];
-	memcpy(_sizes, op->get_state_sizes(), _ndim * sizeof(int));
+	memcpy(_sizes, op->get_state_sizes().data(), _ndim * sizeof(int));
 
 	_dim = 1;
 	for(int i = 0; i < _ndim; i++) {

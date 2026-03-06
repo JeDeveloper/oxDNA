@@ -45,9 +45,15 @@ typedef std::set<base_pair, classcomp> set_of_pairs;
 struct HBParameter {
 	/// this is what defines order parameter: it is loaded from external init file
 	set_of_pairs counted_pairs;
+	// current value in the simulation
 	int current_value;
+	// cached value for something, maybe involves move proposals
 	int stored_value;
+	// name of op
 	std::string name;
+
+	// maximum value for op. usually same as number of counted pairs but can be set lower to reduce size of weight matrix
+	int max_value;
 
 	double cutoff;
 
@@ -83,7 +89,8 @@ struct HBParameter {
 	}
 
 	int get_max_state() const {
-		return counted_pairs.size();
+		return max_value;
+		// return counted_pairs.size();
 	}
 
 	std::string get_name() const {
@@ -649,6 +656,10 @@ public:
 							newpar.save_pair_as_parameter (id1, id2);
 							OX_LOG (_log_level, "--> Adding HB pair (%d, %d) to order parameter `%s'", id1, id2, name_str.c_str());
 						}
+					}
+
+					if (getInputInt(&input, "max_value", &newpar.max_value, 0) == KEY_FOUND) {
+						OX_LOG(_log_level, "Setting artificial maximum value %d for order parameter '%s'. Max value would otherwise be %d.", newpar.max_value, name_str.c_str(), newpar.counted_pairs.size());
 					}
 
 					newpar.set_name (name_str);

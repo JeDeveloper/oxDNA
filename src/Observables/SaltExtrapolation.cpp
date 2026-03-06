@@ -7,7 +7,6 @@
 
 #include "SaltExtrapolation.h"
 #include <sstream>
-#include <map>
 
 #include "../Interactions/InteractionFactory.h"
 #include "../Interactions/DNA2Interaction.h"
@@ -16,9 +15,7 @@ SaltExtrapolation::SaltExtrapolation() {
 	_skip_zeros = false;
 }
 
-SaltExtrapolation::~SaltExtrapolation() {
-
-}
+SaltExtrapolation::~SaltExtrapolation() = default;
 
 void SaltExtrapolation::init() {
 	BaseObservable::init();
@@ -34,7 +31,7 @@ void SaltExtrapolation::init() {
 	// get the dimension of the order parameter
 	int n_op_dim = _op.get_all_parameters_count();
 	int * sizes = new int[n_op_dim];
-	memcpy(sizes, _op.get_state_sizes(), n_op_dim * sizeof(int));
+	memcpy(sizes, _op.get_state_sizes().data(), n_op_dim * sizeof(int));
 	int n_op_states = 1;
 	for(int i = 0; i < n_op_dim; i++)
 		n_op_states *= sizes[i];
@@ -177,7 +174,7 @@ std::string SaltExtrapolation::get_output_string(llint curr_step) {
 	// for each salt, we print a histogram
 	int n_op_dim = _op.get_all_parameters_count();
 	int * sizes = new int[n_op_dim];
-	memcpy(sizes, _op.get_state_sizes(), n_op_dim * sizeof(int));
+	memcpy(sizes, _op.get_state_sizes().data(), n_op_dim * sizeof(int));
 	for(j = 0; j < _salts.size(); j++) {
 		// header per each salt
 		output_str += Utils::sformat("t: %llu, salt: %g, Ts: ", curr_step, _salts[j]);
