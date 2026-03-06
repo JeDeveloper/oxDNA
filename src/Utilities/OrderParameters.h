@@ -661,6 +661,9 @@ public:
 					if (getInputInt(&input, "max_value", &newpar.max_value, 0) == KEY_FOUND) {
 						OX_LOG(_log_level, "Setting artificial maximum value %d for order parameter '%s'. Max value would otherwise be %d.", newpar.max_value, name_str.c_str(), newpar.counted_pairs.size());
 					}
+					else {
+						newpar.max_value = newpar.counted_pairs.size();
+					}
 
 					newpar.set_name (name_str);
 

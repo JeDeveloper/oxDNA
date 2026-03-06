@@ -95,7 +95,7 @@ void Weights::init (const char * filename, OrderParameters * op, bool safe, doub
         }
 
         if (index < _dim) _w[index] = tmpf;
-        else OX_LOG (Logger::LOG_WARNING, "(Weights.cpp) Trying to assign weight to non-existent index the order parameter. Weight file too long/inconsistent?");
+        else OX_LOG (Logger::LOG_WARNING, "(Weights.cpp) Trying to assign weight to non-existent index %d. Weight file too long/inconsistent?", index);
 
         lineno ++;
     }
@@ -161,7 +161,8 @@ double Weights::get_weight(const vector<int> &state, int * ptr) const {
 		printf ("\n");
 	}
 	* ptr = index;
-	return _w[index];
+	// use bounds checking
+	return _w.at(index);
 }
 
 /**
