@@ -75,6 +75,19 @@ void export_BaseParticle(py::module &m) {
 	particle.def_readwrite("int_centers", &BaseParticle::int_centers, R"pbdoc(
 		The interaction sites of the particle.
 	)pbdoc");
+
+	particle.def("set_orientation", [](BaseParticle &self, LR_matrix const &orientation) {
+		// your implementation here
+		self.orientation = orientation;
+		self.orientationT = orientation.get_transpose();
+		self.set_positions();
+	}, py::arg("orientation"), R"pbdoc(
+    Set the orientation of the particle and update the transpose and the positions of the interaction sites.
+
+    Parameters
+    ----------
+    orientation: :class:`LR_matrix`
+        The new orientation of the particle as a 3x3 matrix.)pbdoc");
 }
 
 #endif /* OXPY_BINDINGS_INCLUDES_BASEPARTICLE_H_ */
