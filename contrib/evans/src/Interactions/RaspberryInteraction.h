@@ -23,6 +23,79 @@
 // todo: make this dynamic or smth!!!! or at least warn when it will cause issues
 #define PATCHY_CUTOFF 0.18f
 
+/**
+ * struct to hold parameters for 1-axis narrow type modulation
+ */
+struct NarrowType {
+    number t0, ts, tc, a, b;
+    number V_mod(number t) const
+    {
+        number val = 0;
+        t -= t0;
+        if (t < 0)
+            t *= -1;
+
+        if (t < tc) {
+            if (t > ts) {
+                // smoothing
+                val = b * SQR(tc - t);
+            } else
+                val = 1.f - a * SQR(t);
+        }
+
+        return val;
+    }
+
+    number V_modDsin(number t)
+    {
+        number val = 0;
+        number m = 1;
+        number tt0 = t - t0;
+        // this function is a parabola centered in t0. If t < 0 then the value of the function
+        // is the same but the value of its derivative has the opposite sign, so m = -1
+        if(tt0 < 0) {
+            tt0 *= -1;
+            m = -1;
+        }
+
+        if(tt0 < tc) {
+            number sint = sin(t);
+            if(tt0 > ts) {
+                // smoothing
+                val = m * 2 * b * (tt0 - tc) / sint;
+            }
+            else {
+                if(SQR(sint) > 1e-8) val = -m * 2 * a * tt0 / sint;
+                else val = -m * 2 * a;
+            }
+        }
+
+        return val;
+    }
+};
+
+const NarrowType NARROW_TYPES[] = {
+    // narrow type 0
+    {
+        0., 0.7, 3.10559, 0.46, 0.133855
+    },
+    // narrow type 1
+    {
+        0., 0.2555, 1.304631441617743, 3., 0.7306043547966398
+    },
+    // narrow type 2
+    {
+    0., 0.2555, 0.782779, 5., 2.42282
+    },
+    // narrow type 3
+    {
+        0., 0.17555, 0.4381832920710734, 13., 8.68949241736805
+    },
+    // narrow type 4
+    {
+        0., 0.17555, 0.322741, 17.65, 21.0506
+    }
+};
 
 // hash unordered pairs
 struct UnorderedPairHash {
@@ -34,7 +107,6 @@ struct UnorderedPairHash {
         return std::hash<int>()(a) ^ (std::hash<int>()(b) << 1);
     }
 };
-
 
 // Custom equality function for unordered pairs
 struct UnorderedPairEqual {
@@ -164,6 +236,10 @@ protected:
     number m_nPatchyBondEnergyCutoff;
     number m_nDefaultAlpha;
     bool _has_read_top; // flag to avoid double-reading the top file
+
+    bool patchy_angmod; // whether to use angular modulation in patchy interactions
+    NarrowType narrow_type; // parameters for angular modulation
+    number _patch_E_cut;
 public:
     RaspberryInteraction();
     virtual ~RaspberryInteraction();
