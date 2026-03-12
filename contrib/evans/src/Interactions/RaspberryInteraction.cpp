@@ -19,7 +19,7 @@ RaspberryInteraction::RaspberryInteraction()  : BaseInteraction(){
     // this will depend somewhat on inputs
     m_nPatchyBondEnergyCutoff = -0.1;
     m_nDefaultAlpha = 0;
-    patchy_angmod = false;
+    patchy_angmod = true;
     narrow_type = NARROW_TYPES[0];
 }
 
@@ -39,7 +39,8 @@ void RaspberryInteraction::get_settings(input_file &inp) {
     getInputNumber(&inp, "PATCHY_bond_energy", &m_nPatchyBondEnergyCutoff, 0);
     // default alpha value if it isn't specified
     getInputNumber(&inp, "PATCHY_alpha", &m_nDefaultAlpha, 0);
-    if (getInputBool(&inp, "patchy_angmod", &patchy_angmod, 0)){
+    getInputBool(&inp, "patchy_angmod", &patchy_angmod, 0);
+    if (patchy_angmod){
         int narrow_type_num;
         if (getInputInt(&inp, "narrow_type", &narrow_type_num, 0) == KEY_FOUND) {
             if (narrow_type_num < 0 || narrow_type_num > 4) {
