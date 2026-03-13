@@ -286,7 +286,8 @@ public:
     // interaction functions
     number repulsive_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces);
 
-    number patchy_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces);
+    number patchy_pt_interaction_angmod(BaseParticle *p, BaseParticle *q, bool update_forces);
+    number patchy_pt_interaction_noangmod(BaseParticle *p, BaseParticle *q, bool update_forces);
 
     void readPatchString(const std::string &patch_line);
 

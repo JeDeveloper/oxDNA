@@ -20,6 +20,7 @@ RaspberryInteraction::RaspberryInteraction()  : BaseInteraction(){
     m_nPatchyBondEnergyCutoff = -0.1;
     m_nDefaultAlpha = 0;
     patchy_angmod = true;
+    _has_read_top = false;
     narrow_type = NARROW_TYPES[0];
 }
 
@@ -155,7 +156,7 @@ const RaspberryInteraction::Patch& RaspberryInteraction::getParticlePatchType(Ba
  */
 LR_vector RaspberryInteraction::getParticlePatchPosition(BaseParticle *p, int patch_idx) const {
     // patch positions are listed first
-    return p->int_centers[patch_idx];
+    return p->int_centers[2*patch_idx];
 }
 
 /**
@@ -166,8 +167,9 @@ LR_vector RaspberryInteraction::getParticlePatchPosition(BaseParticle *p, int pa
  */
 LR_vector RaspberryInteraction::getParticlePatchAlign(BaseParticle *p, int patch_idx) const {
     const ParticleType* particleType = &m_ParticleTypes[m_ParticleList[p->get_index()]];
+    int idx = patch_idx + std::get<PTYPE_PATCH_IDS>(*particleType).size();
     // patch orientations are listed after patch positions
-    return p->int_centers[patch_idx + std::get<PTYPE_REP_PTS>(*particleType).size() ];
+    return p->int_centers[2*patch_idx + 1];
 }
 
 /**
@@ -209,7 +211,12 @@ number RaspberryInteraction::pair_interaction_nonbonded(BaseParticle *p,
     }
 
     e += repulsive_pt_interaction(p, q, update_forces);
-    e += patchy_pt_interaction(p, q, update_forces);
+    if (patchy_angmod) {
+        e += patchy_pt_interaction_angmod(p, q, update_forces);
+    }
+    else {
+        e += patchy_pt_interaction_noangmod(p, q, update_forces);
+    }
 
     return e;
 }
@@ -636,7 +643,7 @@ number RaspberryInteraction::repulsive_pt_interaction(BaseParticle *p, BaseParti
     return energy;
 }
 
-number RaspberryInteraction::patchy_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces) {
+number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseParticle *q, bool update_forces) {
     /**
      * computes the forces and energies from the interactions of patches on two particles
      * I've mostly copied this code from alloassembly, which is itself a modified version of
@@ -644,8 +651,8 @@ number RaspberryInteraction::patchy_pt_interaction(BaseParticle *p, BaseParticle
      */
     int c = 0;
     LR_vector ppatch_a1, qpatch_a1, r_dist_dir;
-    LR_vector tmptorquep(0, 0, 0);
-    LR_vector tmptorqueq(0, 0, 0);
+    // LR_vector tmptorquep(0, 0, 0);
+    // LR_vector tmptorqueq(0, 0, 0);
     const ParticleType& p_type = m_ParticleTypes[p->type];
     const ParticleType& q_type = m_ParticleTypes[q->type];
     number energy = 0.;
@@ -703,28 +710,29 @@ number RaspberryInteraction::patchy_pt_interaction(BaseParticle *p, BaseParticle
                     // keep exp_part seperate so it can be used in force calculation
                     number e_ij = exp_part;
 
-                    // if the angular modulation is on
-                    if (patchy_angmod) {
-                        // one-axis angle modulation
-                        rdist = sqrt(rnorm);
 
-                        r_dist_dir = _computed_r / rdist;
+                    // one-axis angle modulation
+                    rdist = sqrt(rnorm);
 
-                        qpatch_a1 = getParticlePatchAlign(q, qpatch_idx);
-                        ppatch_a1 = getParticlePatchAlign(p, ppatch_idx);
-                        // cosine of angle between a1 and the patch displacement vector
-                        cosa1 = ppatch_a1 * r_dist_dir;
-                        // negative cosine of angle between a2 and the patch displacement vector
-                        cosb1 = -qpatch_a1 * r_dist_dir;
+                    r_dist_dir = _computed_r / rdist;
 
-                        ta1 = LRACOS(cosa1);
-                        tb1 = LRACOS(cosb1);
+                    qpatch_a1 = getParticlePatchAlign(q, qpatch_idx);
+                    ppatch_a1 = getParticlePatchAlign(p, ppatch_idx);
+                    // cosine of angle between a1 and the patch displacement vector
+                    cosa1 = ppatch_a1 * r_dist_dir;
+                    // negative cosine of angle between a2 and the patch displacement vector
+                    cosb1 = -qpatch_a1 * r_dist_dir;
 
-                        fa1 =  narrow_type.V_mod(ta1);
-                        fb1 =  narrow_type.V_mod(tb1) ;
-                        f1 =  eps * (exp_part - _patch_E_cut);
-                        e_ij *= f1 * fa1 * fb1;
-                    }
+                    ta1 = LRACOS(cosa1);
+                    tb1 = LRACOS(cosb1);
+
+                    fa1 =  narrow_type.V_mod(ta1);
+                    fb1 =  narrow_type.V_mod(tb1) ;
+                    f1 =  eps * (exp_part - _patch_E_cut);
+                    number angmod = f1 * fa1 * fb1;
+                    assert(angmod > 0 && angmod < 1);
+                    e_ij *= angmod;
+
 
                     e_2patch += e_ij;
 
@@ -733,29 +741,133 @@ number RaspberryInteraction::patchy_pt_interaction(BaseParticle *p, BaseParticle
                         number f1D = (5 * exp_part * r8b10);
 
                         LR_vector tmp_force = patch_dist * f1D;
+                        LR_vector torquep, torqueq;
+                        number fa1Dsin = narrow_type.V_modDsin(ta1);
+                        number fb1Dsin = narrow_type.V_modDsin(tb1);
 
-                        if (patchy_angmod) {
-                            number fa1Dsin =  narrow_type.V_modDsin(ta1);
-                            number fb1Dsin =  narrow_type.V_modDsin(tb1);
+                        LR_vector dir;
 
-                            LR_vector dir;
+                        //torque VM1
+                        dir = r_dist_dir.cross(ppatch_a1);
+                        torquep = dir * (f1 * fa1Dsin * fb1 );
 
-                            //torque VM1
-                            dir = r_dist_dir.cross(ppatch_a1);
-                            LR_vector torquep = dir * (f1 * fa1Dsin * fb1 );
-
-                            //torque VM2
-                            dir = r_dist_dir.cross(qpatch_a1);
-                            LR_vector torqueq = dir * (f1 * fa1 * fb1Dsin );
-
-
-                            torquep += ppatch.cross(tmp_force);
-                            torqueq += qpatch.cross(tmp_force);
+                        //torque VM2
+                        dir = r_dist_dir.cross(qpatch_a1);
+                        torqueq = dir * (f1 * fa1 * fb1Dsin );
 
 
-                            tmp_force += (ppatch_a1 - r_dist_dir * cosa1) * (f1 * fa1Dsin * fb1 / rdist);
-                            tmp_force += -(qpatch_a1 + r_dist_dir * cosb1) * (f1 * fa1 * fb1Dsin / rdist);
-                        }
+                        torquep += ppatch.cross(tmp_force);
+                        torqueq += qpatch.cross(tmp_force);
+
+                        // i'm not sure why this comes after the torque but that's how it is in romano
+                        tmp_force += (ppatch_a1 - r_dist_dir * cosa1) * (f1 * fa1Dsin * fb1 / rdist);
+                        tmp_force += -(qpatch_a1 + r_dist_dir * cosb1) * (f1 * fa1 * fb1Dsin / rdist);
+
+                        p->force -= tmp_force;
+                        q->force += tmp_force;
+
+                        // TODO: better torque?
+                        LR_vector p_torque = p->orientationT * torquep;
+                        LR_vector q_torque = q->orientationT * torqueq;
+
+                        p->torque -= p_torque;
+                        q->torque += q_torque;
+                    }
+
+                }
+            }
+            // if energy is great large enough for bond
+            if (e_2patch < getPatchBondEnergyCutoff()) {
+                // if bond does not alread exist
+                if (!is_bound_to(p->index, ppatch_idx, q->index, qpatch_idx)) {
+                    // set bound
+                    set_bound_to(p->index, ppatch_idx, q->index, qpatch_idx);
+                }
+            }
+            // if energy is not small enough for a bond, but one exists
+            else if (is_bound_to(p->index, ppatch_idx, q->index, qpatch_idx)){
+                // if patches are bound, but shouldn't be
+                clear_bound_to(p->index, ppatch_idx);
+                clear_bound_to(q->index, qpatch_idx);
+
+            }
+            energy += e_2patch;
+        }
+    }
+    return energy;
+}
+
+number RaspberryInteraction::patchy_pt_interaction_noangmod(BaseParticle *p, BaseParticle *q, bool update_forces) {
+    /**
+     * computes the forces and energies from the interactions of patches on two particles
+     * I've mostly copied this code from alloassembly, which is itself a modified version of
+     * oxDNA_torsion, which is a modified version of Flavio Romano's PatchyShapeInteraction code
+     */
+    int c = 0;
+    const ParticleType& p_type = m_ParticleTypes[p->type];
+    const ParticleType& q_type = m_ParticleTypes[q->type];
+    number energy = 0.;
+
+    // iter patches on particle p
+    for(int ppatch_idx = 0; ppatch_idx < std::get<PTYPE_PATCH_IDS>(p_type).size(); ppatch_idx++) {
+        // important: keep pi (index of patch in particle type) distinct from ppatch_tid (patch type global id)
+        // lookup patch type id
+        int ppatch_tid = std::get<PTYPE_PATCH_IDS>(p_type)[ppatch_idx];
+
+        LR_vector ppatch = getParticlePatchPosition(p, ppatch_idx);
+
+        // iter patches on particle q
+        for(int qpatch_idx = 0; qpatch_idx < std::get<PTYPE_PATCH_IDS>(q_type).size(); qpatch_idx++) {
+            // note: do NOT use the position from this, since it's not rotated
+            int qpatch_tid = std::get<PTYPE_PATCH_IDS>(q_type)[qpatch_idx];
+
+            number e_2patch = 0.;
+
+            // if patches can interact based on color, and both patches are active and not bound to another patch
+            // todo maybe pass patch types so we don't need to recompute these in patches_can_interact
+            bool can_interact = patches_can_interact(p, q,
+                                     ppatch_idx,
+                                     qpatch_idx);
+            if (can_interact)
+            {
+                LR_vector qpatch = getParticlePatchPosition(q, qpatch_idx);
+                number eps = std::get<PP_INT_EPS>(m_PatchPatchInteractions[{ppatch_tid, qpatch_tid}]);
+
+                // get displacement vector between patches p and q
+                // DO NOT apply particle orientation here! that is already applied!
+                LR_vector patch_dist = _computed_r + qpatch - ppatch;
+                // compute distancesquared
+                number patch_dist_sqr = patch_dist.norm();
+                //LR_vector<number> patch_dist_dir = patch_dist / sqrt(dist);
+                //number rdist = sqrt(rnorm);
+                //LR_vector<number> r_dist_dir = _computed_r / rdist;
+
+                //printf("Patches %d and %d distance %f  cutoff is: %f,\n",pp->patches[pi].id,qq->patches[pj].id,dist,SQR(PATCHY_CUTOFF));
+
+                number dist_sqr_cutoff = std::get<PP_MAX_DIST_SQR>(m_PatchPatchInteractions[{ppatch_tid, qpatch_tid}]);
+                if (patch_dist_sqr < dist_sqr_cutoff) {
+                    // wait till now to look up either patch align, since most of the time we won't get this far
+
+                    // compute ( r^2 )^4 / alpha
+//                    const Patch& ppatchtype = getParticlePatchType(p, ppatch_idx);
+//                    const Patch& qpatchtype = getParticlePatchType(q, qpatch_idx);
+                    // alpha ** 10
+                    number alpha_exp = std::get<PP_INT_ALPHA_POW>(m_PatchPatchInteractions[{ppatch_tid, qpatch_tid}]);
+                    // cocmpute r^8 / a^10 here so we can use it for forces later
+                    number r8b10;
+                    number exp_part = eps * compute_energy(patch_dist_sqr, alpha_exp, r8b10);
+                    e_2patch += exp_part;
+
+                    if (update_forces) {
+                        // lorenzo version
+//                        // i gotta deal with this
+//                        number force_mod = eps * a_part * exp_part * (4. * b_part / (SQR(r_p) * r_p)) +
+//                                           sigma_ss * tmp_energy / SQR(r_p - rcut_ss);
+//                        LR_vector tmp_force = patch_dist * (force_mod / r_p);
+                        // compute force magnitude
+                        number f1D = (5 * exp_part * r8b10);
+
+                        LR_vector tmp_force = patch_dist * f1D;
 
                         p->force -= tmp_force;
                         q->force += tmp_force;
@@ -828,8 +940,8 @@ bool RaspberryInteraction::patches_can_interact(BaseParticle *p,
     if (patch_bound(p, ppatch_idx) && patch_bound_to(p, ppatch_idx) != std::pair<int,int>(q->index, qpatch_idx)){
         return false;
     }
-    // if q patch is already locked (we can assume if it's locked, it's not to p patch)
-    if (patch_bound(q, qpatch_idx)){
+    // todo: make this more efficient
+    if (patch_bound(q, qpatch_idx) && patch_bound_to(q, qpatch_idx) != std::pair<int,int>(p->index, ppatch_idx)){
         return false;
     }
     // todo: find and report asymmetric locks
@@ -890,7 +1002,7 @@ const RaspberryInteraction::ParticlePatch& RaspberryInteraction::patch_bound_to(
 bool RaspberryInteraction::is_bound_to(int p, int ppatch_idx, int q, int qpatch_idx) const {
     assert(p < m_PatchyBonds.size());
     assert(ppatch_idx < m_PatchyBonds[p].size());
-    assert(p < m_PatchyBonds.size());
+    assert(q < m_PatchyBonds.size());
     assert(qpatch_idx < m_PatchyBonds[q].size());
     return m_PatchyBonds[p][ppatch_idx] == ParticlePatch(q, qpatch_idx);
 }
