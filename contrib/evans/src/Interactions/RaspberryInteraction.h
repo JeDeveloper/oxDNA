@@ -149,6 +149,7 @@ protected:
 #define PPATCH_POS 1
 #define PPATCH_ORI 2
 #define PPATCH_COLOR 3
+#define PPATCH_STRENGTH 4
 #define PPATCH_STATE 5
 #define PPATCH_INT_DIST 7
     /**

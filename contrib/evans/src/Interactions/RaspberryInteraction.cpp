@@ -388,13 +388,15 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             for (int pj = 0; pj < m_PatchesTypes.size(); pj++) {
                 int pj_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pj]);
                 // use petr + flavio version of default color interactions
-                number pj_dist = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pj]);
+                // number pj_dist = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pj]);
                 if (((abs(pi_color) >= 20) && (pi_color + pj_color == 0)) ||
                     ((abs(pi_color) < 20) && (pi_color == pj_color))) {
                     // temporary variable
                     number r8b10;
-                    // todo: patch strengths? ugh4
                     number dist_sum = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pi]) + std::get<PPATCH_INT_DIST>(m_PatchesTypes[pi]);
+                    // find interaction strength by computing the geometric mean of the two patch strengths
+                    // todo: allow explicit interaction strength specification
+                    number interaction_strength = sqrt(std::get<PPATCH_STRENGTH>(m_PatchesTypes[pi]) * std::get<PPATCH_STRENGTH>(m_PatchesTypes[pj]));
                     number dist_cutoff_sqrd = pow(dist_sum, 2) * pow(
                             log(1.001) - log(MIN_E),
                             0.2
@@ -403,30 +405,11 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
                     number e_standard = compute_energy(pow(dist_sum, 2), pow(dist_sum, 10), r8b10);
                     number e_cutoff = compute_energy(dist_cutoff_sqrd, pow(dist_sum, 10), r8b10);
                     m_PatchPatchInteractions[{pi, pj}] = {
-                            1.0,
+                            interaction_strength,
                             pow(dist_sum, 10),
                             dist_cutoff_sqrd,
                             e_cutoff // probably like MIN_E
                     };
-//                    // code for Lorenzo version
-//                    number sigma_ss = pi_dist + pj_dist;
-//                    assert(sigma_ss > 0);
-//                    assert(!std::isnan(sigma_ss));
-//                    number rcut_ss = 1.5 * sigma_ss;
-//                    assert(!std::isnan(rcut_ss));
-//                    number B_ss = 1. / (1. + 4. * SQR(1. - rcut_ss / sigma_ss));
-//                    assert(!std::isnan(B_ss));
-//                    number a_part = -1. / (B_ss - 1.) / exp(1. / (1. - rcut_ss / sigma_ss));
-//                    assert(!std::isnan(a_part));
-//                    number b_part = B_ss * pow(sigma_ss, 4.);
-//                    assert(!std::isnan(b_part));
-//                    m_PatchPatchInteractions[{pi, pj}] = {
-//                            sigma_ss, // sigma_ss
-//                            1.5 * sigma_ss, // rcut_ss
-//                            a_part, // a_part
-//                            b_part, //b_part
-//                            1. //epsilon
-//                    };
                 }
             }
         }
@@ -454,7 +437,7 @@ void RaspberryInteraction::readPatchString(const std::string& patch_line) {
         throw oxDNAException("Invalid patch type str `" + patch_line + "`!");
     }
     if (fStrength != 1.0){
-        OX_LOG(Logger::LOG_WARNING, "Strength is required for compatability with Patchy Helix Bundle but i don't currently use it");
+        OX_LOG(Logger::LOG_WARNING, "Patch strength is only used if you don't explicitly specify the interaction matrix");
     }
 
     // read color
@@ -728,9 +711,9 @@ number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseP
 
                     fa1 =  narrow_type.V_mod(ta1);
                     fb1 =  narrow_type.V_mod(tb1) ;
-                    f1 =  eps * (exp_part - _patch_E_cut);
+                    f1 =  -eps * (exp_part - _patch_E_cut);
                     number angmod = f1 * fa1 * fb1;
-                    assert(angmod > 0 && angmod < 1);
+                    assert(angmod >= 0 && angmod < 1.001);
                     e_ij *= angmod;
 
 
