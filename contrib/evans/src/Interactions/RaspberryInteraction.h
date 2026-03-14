@@ -197,11 +197,11 @@ protected:
 
     // runtime variables
     std::vector<std::vector<int>> m_ParticleStates; // todo
-
+public:
     // bonds. this is tricky
     // use this name here for clarity
     using ParticlePatch = std::pair<int,int>;
-
+protected:
     // list of lists
     // each item in the outer list of particles, the inner list is of patches on the particles
     std::vector<std::vector<ParticlePatch>> m_PatchyBonds;
@@ -306,6 +306,10 @@ public:
     bool patch_bound(BaseParticle* p, int patch_idx) const;
     void set_bound_to(int p, int ppatch_idx, int q, int qpatch_idx);
     void clear_bound_to(int p, int ppatch_idx);
+    const std::vector< std::vector< ParticlePatch>>& getPatchyBonds() const {
+        return m_PatchyBonds;
+    }
+    const std::vector<ParticlePatch>& getBondsFor(int idx) const;
 
     static number compute_energy(number patch_dist_sqr, number alpha_exp, number &r8b10) ;
 };

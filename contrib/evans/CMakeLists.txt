@@ -2,7 +2,7 @@
 # file created: 3 Dec. 2024, based on rovigatti/CMakeLists.txt
 SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY  ${CMAKE_CURRENT_SOURCE_DIR})
 
-ADD_CUSTOM_TARGET(evans DEPENDS RaspberryPatchyInteraction)
+ADD_CUSTOM_TARGET(evans DEPENDS RaspberryPatchyInteraction RaspberryPatchyBonds)
 
 # copying this next bit directly from Lorenzo's CMakeLists.txt
 # without this bit clang-based compilation fails with some "undefined symbols" errors during the linking stage
@@ -20,6 +20,7 @@ endfunction()
 
 # interactions
 add_library_no_prefix(RaspberryPatchyInteraction src/Interactions/RaspberryInteraction.cpp)
+add_library_no_prefix(RaspberryPatchyBonds src/Observables/RaspberryPatchyBonds.cpp src/Interactions/RaspberryInteraction.cpp)
 
 # cuda stuff
 # first part copied from Lorenzo's CMakeLists.txt file

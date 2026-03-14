@@ -110,6 +110,7 @@ void RaspberryInteraction::allocate_particles(std::vector<BaseParticle *> &parti
         particles[i]->index = i;
         particles[i]->strand_id = i;
         particles[i]->type = i_type;
+        particles[i]->btype = i_type; // needed for CUDA: btype is packed into ppos.w
 
         // init interaction runtime variables
         // particle states
@@ -1003,6 +1004,12 @@ void RaspberryInteraction::clear_bound_to(int p, int ppatch_idx) {
     assert(p < m_PatchyBonds.size());
     assert(ppatch_idx < m_PatchyBonds[p].size());
     m_PatchyBonds[p][ppatch_idx] = {-1,-1};
+}
+
+const std::vector<RaspberryInteraction::ParticlePatch> &RaspberryInteraction::getBondsFor(int idx) const {
+    assert(idx < m_PatchyBonds.size());
+    assert(idx > -1);
+    return m_PatchyBonds[idx];
 }
 
 ///**
