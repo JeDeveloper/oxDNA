@@ -98,9 +98,9 @@ float _V_modDsin(float t, float t0, float ts, float tc, float a, float b) {
  * Mirrors RaspberryInteraction::compute_energy on the CPU.
  */
 __device__ __forceinline__
-float _compute_patch_energy(float dist_sqr, float alpha_pow, float &r8b10) {
+c_number _compute_patch_energy(c_number dist_sqr, c_number alpha_pow, c_number &r8b10) {
     r8b10 = (dist_sqr * dist_sqr * dist_sqr * dist_sqr) / alpha_pow;
-    return -1.001f * expf(-r8b10 * dist_sqr);
+    return (c_number) -1.001 * exp(-r8b10 * dist_sqr);
 }
 
 /* ============================================================
@@ -518,8 +518,14 @@ void CUDARaspberryInteraction::get_settings(input_file &inp) {
 void CUDARaspberryInteraction::cuda_init(int N) {
     CUDABaseInteraction::cuda_init(N);
 
-    // The CPU read_topology + allocate_particles will have already been called
-    // by the simulation framework before cuda_init.  We just use the data.
+    // Populate data structures (m_ParticleTypes, m_PatchesTypes, etc.) if not already done.
+    // Like CUDADetailedPatchySwapInteraction, we call read_topology with temporary particles
+    // so cuda_init works regardless of whether the CPU path has run first.
+    int N_strands;
+    std::vector<BaseParticle *> particles(N);
+    RaspberryInteraction::read_topology(&N_strands, particles);
+    for (auto p : particles) delete p;
+
     RaspberryInteraction::init(); // sets _patch_E_cut etc.
 
     // ---- Sanity checks ----

@@ -64,7 +64,7 @@ public:
                         CUDABox *d_box);
 };
 
-extern "C" BaseInteraction *make_CUDARaspberryInteraction() {
+extern "C" BaseInteraction *make_CUDARaspberryPatchyInteraction() {
     return new CUDARaspberryInteraction();
 }
 

@@ -356,8 +356,10 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             // process patch IDs
             for (std::string &sz: patch_id_strs_list) {
                 int patch = std::stoi(sz);
-                assert(patch < m_PatchesTypes.size());
-                std::get<PTYPE_PATCH_IDS>(m_ParticleTypes[iParticleType]).push_back(patch);
+                if (patch >  -1) { // skip "dummy" patch -1
+                    assert(patch < static_cast<int>(m_PatchesTypes.size()));
+                    std::get<PTYPE_PATCH_IDS>(m_ParticleTypes[iParticleType]).push_back(patch);
+                }
             }
             // process interaction points
             for (std::string &sz: int_pt_strs_list) {
