@@ -7,6 +7,9 @@
 
 #include <sstream>
 #include "RaspberryInteraction.h"
+
+#include <regex>
+
 #include "Particles/PatchyParticle.h"
 #include "../Particles/RaspberryParticle.h"
 
@@ -37,6 +40,8 @@ void RaspberryInteraction::init() {
 
 void RaspberryInteraction::get_settings(input_file &inp) {
     BaseInteraction::get_settings(inp);
+    getInputNumber(&inp, "dt", &_dt, 1);
+
     getInputNumber(&inp, "PATCHY_bond_energy", &m_nPatchyBondEnergyCutoff, 0);
     // default alpha value if it isn't specified
     getInputNumber(&inp, "PATCHY_alpha", &m_nDefaultAlpha, 0);
@@ -328,13 +333,14 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             }
             m_RepulsionPoints[i] = {i, position, r};
         }
-        //    // cache sums of all possible repulsion point pairs
-        //    // todo: warn if this is too big?
-        //    for (int i = 0; i < m_RepulsionPoints.size(); i++){
-        //        for (int j = i; j < m_RepulsionPoints.size(); j++){
-        //            m_RSums[{i, j}] = std::get<2>(m_RepulsionPoints[i]) + std::get<2>(m_RepulsionPoints[j]);
-        //        }
-        //    }
+        // cache sums of all possible repulsion point pairs
+        // todo: warn if this is too big?
+        for (int i = 0; i < m_RepulsionPoints.size(); i++){
+            for (int j = i; j < m_RepulsionPoints.size(); j++){
+                m_RepulsionDistSums[{i, j}] = std::get<REPULSION_DIST>(m_RepulsionPoints[i]) + std::get<REPULSION_DIST>(m_RepulsionPoints[j]);
+                m_RepulsionDistSqrSumMaxs[{i, j}] = 1.2 * SQR( (m_RepulsionDistSums[{i, j}]) );
+            }
+        }
 
         // read particle types
         m_ParticleTypes.resize(particle_type_lines.size());
@@ -377,7 +383,29 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             }
         }
 
-        // todo: read operations
+        // todo: option to use the Arrhenaeus equation so the probability can change dynamaically with T
+        for (const auto& signal_str: signal_passing_operations) {
+            readSignalPassingOperation(signal_str);
+        }
+        // compute signal passing probabilities
+        m_ActivationProbs.resize(m_ParticleList.size());
+        for (int iParticleType = 0; iParticleType < m_ParticleTypes.size(); iParticleType++) {
+            int num_ops = std::get<PTYPE_SIGNAL_PASSING_OPS>(m_ParticleTypes[iParticleType]).size();
+            m_ActivationProbs[iParticleType].resize(num_ops);
+            for (int iOpIdx = 0; iOpIdx < num_ops; iOpIdx++) {
+                // probabilty is written in the top file as the probabilty per oxDNA time unit
+                number base_rate = std::get<PSIGNAL_PROB>(std::get<PTYPE_SIGNAL_PASSING_OPS>(m_ParticleTypes[iParticleType])[iOpIdx]);
+                if (base_rate == 1) {
+                    m_ActivationProbs[iParticleType][iOpIdx] = 1.;
+                }
+                else {
+                    // convert from probability per time unit to probability per time step
+                    m_ActivationProbs[iParticleType][iOpIdx] = 1 - (log(1. - base_rate) / -log(_dt));
+                    assert(m_ActivationProbs[iParticleType][iOpIdx] > 0);
+                    assert(m_ActivationProbs[iParticleType][iOpIdx] < 1.);
+                }
+            }
+        }
 
         // close topology file
         topology.close();
@@ -419,6 +447,37 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
         _has_read_top = true;
     }
     allocate_particles(particles);
+    // rcut
+    _rcut = 0.; // start from 0, we are calculating max value
+    // patch interaction maximum distances
+    for (int i = 0; i < m_PatchesTypes.size(); i++) {
+        for (int j = 0; j < m_PatchesTypes.size(); j++) {
+            if (patch_types_interact(m_PatchesTypes[i], m_PatchesTypes[j])) {
+                number dist_sum = sqrt(std::get<PP_MAX_DIST_SQR>(m_PatchPatchInteractions[{i, j}]));
+                dist_sum += sqrt(std::get<PPATCH_POS>(m_PatchesTypes[i]).norm());
+                dist_sum += sqrt(std::get<PPATCH_POS>(m_PatchesTypes[j]).norm());
+                if (dist_sum > _rcut) {
+                    _rcut = dist_sum;
+                }
+            }
+        }
+    }
+    // max repulsive interaction distances
+    for (int i = 0; i < m_RepulsionPoints.size(); i++) {
+        for (int j = 0; j < m_RepulsionPoints.size(); j++) {
+            // max possible repulsion dist =
+            // max distance between the repulsion points + the sum of the distances of the points from
+            // the particle center
+            number r = sqrt(m_RepulsionDistSqrSumMaxs[{i, j}]);
+            r += sqrt(std::get<REPULSION_COORDS>(m_RepulsionPoints[i]).norm());
+            r += sqrt(std::get<REPULSION_COORDS>(m_RepulsionPoints[j]).norm());
+            if (r > _rcut) {
+                _rcut = r;
+            }
+        }
+    }
+
+    _sqr_rcut = SQR(_rcut);
 }
 
 void RaspberryInteraction::readPatchString(const std::string& patch_line) {
@@ -499,6 +558,51 @@ void RaspberryInteraction::readPatchString(const std::string& patch_line) {
                                ""};
 }
 
+void RaspberryInteraction::readSignalPassingOperation(const std::string &signal_str) {
+    std::stringstream ss(signal_str);
+    int iParticleType;
+    std::vector<int> iOriginStateVars;
+    int iTargetStateVar;
+    number fActivationProb;
+    if (!(ss >> iParticleType)) {
+        throw oxDNAException("Invalid signal passing operation str `%s`! Does not have particle type", signal_str.c_str());
+    }
+    if ((iParticleType >= m_ParticleTypes.size()) || (iParticleType < 0)) {
+        throw oxDNAException("Invalid particle type ID %d in signal passing operation %s", iParticleType, signal_str.c_str());
+    }
+    std::string originStateVarsStr;
+    if (!(ss >> originStateVarsStr)) {
+        throw oxDNAException("Invalid signal passing operation str `%s`! Does not have origin state vars", signal_str.c_str());
+    }
+    // Delimiter pattern
+    std::regex del(",");
+
+    // regex iterator
+    std::sregex_token_iterator it(originStateVarsStr.begin(),
+                     originStateVarsStr.end(), del, -1);
+
+    // End iterator for the
+    std::sregex_token_iterator end;
+
+    while (it != end) {
+        try {
+            iOriginStateVars.push_back(std::stoi(*it));
+        }
+        catch (const std::invalid_argument &e) {
+            throw oxDNAException("Invalid signal passing operation str `%s`! Origin state vars should be comma-separated integers", signal_str.c_str());
+        }
+        ++it;
+    }
+    if (!(ss >> iTargetStateVar)) {
+        throw oxDNAException("Invalid signal passing operation str `%s`! Does not have target state var", signal_str.c_str());
+    }
+    if (!(ss >> fActivationProb)) {
+        OX_LOG(Logger::LOG_INFO, "No activation probability specified in signal passing operation str `%s`, defaulting to 1", signal_str.c_str());
+        fActivationProb = 1.;
+    }
+    std::get<PTYPE_SIGNAL_PASSING_OPS>(m_ParticleTypes[iParticleType]).push_back({iOriginStateVars, iTargetStateVar, fActivationProb});
+}
+
 void RaspberryInteraction::check_input_sanity(std::vector<BaseParticle *> &particles) {
 //    printf("###########\n");
 //    BaseParticle* p = CONFIG_INFO->particles()[0];
@@ -516,6 +620,62 @@ void RaspberryInteraction::check_input_sanity(std::vector<BaseParticle *> &parti
 //    }
 }
 
+void RaspberryInteraction::begin_energy_computation() {
+    // this is the place to update particle states
+    // compared to the particle-particle computations this is relatively computationally light
+    // there may be a faster way to go through these but for now we'll just check every possible operation on every particle, and optimize later if needed
+    for (int iParticleIdx = 0; iParticleIdx < m_ParticleList.size(); iParticleIdx++) {
+        if (canChangeState(iParticleIdx)) {
+            int particleTypeIdx = m_ParticleList[iParticleIdx];
+            RaspberryParticle* pp = static_cast<RaspberryParticle*>(CONFIG_INFO->particles()[iParticleIdx]);
+            const ParticleType& particleType = m_ParticleTypes[m_ParticleList[iParticleIdx]];
+            // a particle with no state variables can't have any operations, so skip it
+            // can assume if a particle has state variables, it has operations
+            for (int iOpIdx = 0; iOpIdx < std::get<PTYPE_SIGNAL_PASSING_OPS>(particleType).size(); iOpIdx++) {
+                SignalPassingOperation signal_op = std::get<PTYPE_SIGNAL_PASSING_OPS>(particleType)[iOpIdx];
+                // check if all origin state vars are active
+                bool all_active = true;
+                for (int origin_var: std::get<PSIGNAL_SOURCE_STATE_VARS>(signal_op)) {
+                    // todo: remove this assert once I'm comfortable
+                    assert(origin_var >= 0 && origin_var < m_ParticleStates[iParticleIdx].size());
+                    if (!m_ParticleStates[iParticleIdx][origin_var]) {
+                        all_active = false;
+                        break;
+                    }
+                }
+                if (all_active) {
+                    number activationProb = getActivationProb(particleTypeIdx, iOpIdx);
+                    if (drand48() < activationProb) {
+                        // activate target state var
+                        int target_var = std::get<PSIGNAL_TARGET_STATE_VAR>(signal_op);
+                        assert(target_var >= 0 && target_var < m_ParticleStates[iParticleIdx].size());
+                        m_ParticleStates[iParticleIdx][target_var] = true;
+                        OX_LOG(Logger::LOG_DEBUG, "Activating state var %d on particle %d of type %d with operation %d (prob %f)", target_var, iParticleIdx, particleTypeIdx, iOpIdx, activationProb);
+                    }
+                }
+            }
+            // update whether particle can change state in the future (if it has any operations left that could be activated)
+            bool canChangeStateAgain = false;
+            for (int iState = 0; iState < std::get<PTYPE_STATE_SIZE>(m_ParticleTypes[particleTypeIdx]); iState++) {
+                if (!m_ParticleStates[iParticleIdx][iState]) {
+                    canChangeStateAgain = true;
+                    break;
+                }
+            }
+            if (!canChangeStateAgain) {
+                assert(m_ParticlesCanChangeState.erase(iParticleIdx) == 1);
+            }
+        }
+    }
+}
+
+number RaspberryInteraction::getActivationProb(int particleType, int operationIdx) const {
+    assert(particleType >= 0 && particleType < m_ParticleTypes.size());
+    assert(operationIdx >= 0 && operationIdx < std::get<PTYPE_SIGNAL_PASSING_OPS>(m_ParticleTypes[particleType]).size());
+    assert(std::get<PTYPE_SIGNAL_PASSING_OPS>(m_ParticleTypes[particleType]).size() == m_ActivationProbs[particleType].size());
+    return m_ActivationProbs[particleType][operationIdx];
+}
+
 /**
  * a lot of this is pilfered from DetailedPatchySwapInteraction::_patchy_two_body_point
  * and DetailedPatchySwapInteraction::_spherical_patchy_two_body in contrib/rovigatti
@@ -524,7 +684,6 @@ void RaspberryInteraction::check_input_sanity(std::vector<BaseParticle *> &parti
  * @param update_forces
  * @return
  */
-
 number RaspberryInteraction::repulsive_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces) {
     int p_type = m_ParticleList[p->get_index()];
     int q_type = m_ParticleList[q->get_index()];
@@ -1014,26 +1173,47 @@ const std::vector<RaspberryInteraction::ParticlePatch> &RaspberryInteraction::ge
     return m_PatchyBonds[idx];
 }
 
-///**
-// * returns the sum of the two radii of the interaction sites given
-// * @param intSite1 type ID of first interaction point
-// * @param intSite1 type ID of first interaction point
-// * @return
-// */
-//number RaspberryInteraction::get_r_sum(const int &intSite1, const int &intSite2) const {
-//    return m_RSums.at({intSite1, intSite2});
-//}
-//
-///**
-// * retrieves the maximum distance at which two repulsive interaction point types (that's a mouthful!)
-// * will interact
-// * @param intSite1 type ID of first interaction point
-// * @param intSite2 type ID of second interaction point
-// * @return
-// */
-//number RaspberryInteraction::get_r_max_sqr(const int &intSite1, const int &intSite2) const {
-//    return 1.2 * SQR(get_r_sum(intSite1, intSite2));
-//}
+/**
+ * returns the sum of the two radii of the interaction sites given
+ * @param intSite1 type ID of first interaction point
+ * @param intSite1 type ID of first interaction point
+ * @return
+ */
+number RaspberryInteraction::get_r_sum(const int &intSite1, const int &intSite2) const {
+    return m_RepulsionDistSums.at({intSite1, intSite2});
+}
+
+/**
+ * retrieves the maximum distance at which two repulsive interaction point types (that's a mouthful!)
+ * will interact
+ * @param intSite1 type ID of first interaction point
+ * @param intSite2 type ID of second interaction point
+ * @return
+ */
+number RaspberryInteraction::get_r_max_sqr(const int &intSite1, const int &intSite2) const {
+    return m_RepulsionDistSqrSumMaxs.at({intSite1, intSite2});
+}
+
+bool RaspberryInteraction::canChangeState(int particleIdx) const {
+    return m_ParticlesCanChangeState.find(particleIdx) != m_ParticlesCanChangeState.end();
+}
+
+const std::vector<bool>& RaspberryInteraction::getParticleState(int particleIdx) const {
+    assert(particleIdx < m_ParticleStates.size());
+    assert(particleIdx > -1);
+    return m_ParticleStates[particleIdx];
+}
+
+int stateValue(const std::vector<bool>& stateVec, int stateSize) {
+    int value = 0;
+    // note: we start at 1 since var 0 is the identity variable and doesn't actually represent a state
+    for (int i = 1; i < stateSize; i++) {
+        if (stateVec[i]) {
+            value += (1 << i);
+        }
+    }
+    return value;
+}
 
 std::string readLineNoComment(std::istream& inp){
     std::string sz;

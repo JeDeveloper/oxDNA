@@ -6,7 +6,6 @@
 #define OXDNA_RASPBERRYPATCHYBONDS_H
 #include "../Observables/BaseObservable.h"
 
-
 class RaspberryPatchyBonds : public BaseObservable {
 public:
     std::string get_output_string(llint curr_step) override;

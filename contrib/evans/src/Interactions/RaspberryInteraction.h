@@ -10,6 +10,7 @@
 
 #include "Interactions/BaseInteraction.h"
 #include <unordered_map>
+#include <unordered_set>
 
 // constants from Flavio Romano's PatchyShapeInteraction
 // i'm not 100% sure why r and rc aren't 1
@@ -167,24 +168,33 @@ protected:
 #define REPULSION_ID 0
 #define REPULSION_COORDS 1
 #define REPULSION_DIST 2
+public:
+    using SignalPassingOperation = std::tuple<std::vector<int>, int, number>;
+#define PSIGNAL_SOURCE_STATE_VARS 0
+#define PSIGNAL_TARGET_STATE_VAR 1
+#define PSIGNAL_PROB 2
 
+protected:
     /**
      * - particle type
      * - number of instances
      * - list of patch ids
      * - list of repulsion point ids
      * - state size
+     * - signal-passing operations (if any)
      */
     using ParticleType = std::tuple<int,
                                     int,
                                     std::vector<int>,
                                     std::vector<int>,
-                                    int>;
+                                    int,
+                                    std::vector<SignalPassingOperation>>;
 #define PTYPE_ID  0
 #define PTYPE_INST_COUNT 1
 #define PTYPE_PATCH_IDS  2
 #define PTYPE_REP_PTS 3
 #define PTYPE_STATE_SIZE 4
+#define PTYPE_SIGNAL_PASSING_OPS 5
 
     // repulsion points
     std::vector<RepulsionPoint> m_RepulsionPoints;
@@ -196,7 +206,7 @@ protected:
     std::vector<int> m_ParticleList;
 
     // runtime variables
-    std::vector<std::vector<int>> m_ParticleStates; // todo
+    std::vector<std::vector<bool>> m_ParticleStates; // todo
 public:
     // bonds. this is tricky
     // use this name here for clarity
@@ -241,6 +251,15 @@ protected:
     bool patchy_angmod; // whether to use angular modulation in patchy interactions
     NarrowType narrow_type; // parameters for angular modulation
     number _patch_E_cut;
+
+    // Repulsion point distance sum cache
+    std::unordered_map<std::pair<int, int>, number, UnorderedPairHash, UnorderedPairEqual> m_RepulsionDistSums;
+    std::unordered_map<std::pair<int, int>, number, UnorderedPairHash, UnorderedPairEqual> m_RepulsionDistSqrSumMaxs;
+
+    // state change cache
+    std::unordered_set<int> m_ParticlesCanChangeState;
+    std::vector<std::vector<number>> m_ActivationProbs; // indexed by particle type, then index of operation in particle type's signal passing ops
+    number _dt; // the number of steps per oxDNA units, todo: read this from somewhere else, it must be stored *somewhere* else
 public:
     RaspberryInteraction();
     virtual ~RaspberryInteraction();
@@ -256,9 +275,9 @@ public:
     LR_vector getParticlePatchPosition(BaseParticle* p, int patch_idx) const;
     LR_vector getParticlePatchAlign(BaseParticle* p, int patch_idx) const;
     LR_vector getParticleInteractionSitePosition(BaseParticle* p, int int_site_idx) const;
-    const RaspberryInteraction::Patch& getParticlePatchType(BaseParticle* p, int patch_idx) const;
-//    number get_r_max_sqr(const int &intSite1, const int &intSite2) const;
-//    number get_r_sum(const int &intSite1, const int &intSite2) const;
+    const Patch& getParticlePatchType(BaseParticle* p, int patch_idx) const;
+    number get_r_max_sqr(const int &intSite1, const int &intSite2) const;
+    number get_r_sum(const int &intSite1, const int &intSite2) const;
 
     // pair interaction functions
     virtual number pair_interaction(BaseParticle *p,
@@ -282,7 +301,7 @@ public:
         return m_nPatchyBondEnergyCutoff;
     }
 
-//    virtual void begin_energy_computation() ;
+    void begin_energy_computation() override ;
 
     // interaction functions
     number repulsive_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces);
@@ -312,11 +331,16 @@ public:
     const std::vector<ParticlePatch>& getBondsFor(int idx) const;
 
     static number compute_energy(number patch_dist_sqr, number alpha_exp, number &r8b10) ;
+
+    // signal passing stuff
+    void readSignalPassingOperation(const std::string& line);
+    bool canChangeState(int particleIdx) const;
+    number getActivationProb(int particleType, int operationIdx) const;
+    const std::vector<bool>& getParticleState(int particleIdx) const;
 };
 
+int stateValue(const std::vector<bool>& stateVec, int stateSize);
 std::string readLineNoComment(std::istream& inp);
 LR_vector parseVector(const std::string& sz);
-
-
 
 #endif //RASPBERRYINTERACTION_H
