@@ -9,6 +9,7 @@
 #include "RaspberryInteraction.h"
 
 #include <regex>
+#include <c++/11/csignal>
 
 #include "Particles/PatchyParticle.h"
 #include "../Particles/RaspberryParticle.h"
@@ -711,7 +712,11 @@ number RaspberryInteraction::repulsive_pt_interaction(BaseParticle *p, BaseParti
             // lookup r-max squared
             // todo: probably possible to precompute these to save a little time
             // sum of radii of patchy particles
-            rsum = std::get<REPULSION_DIST>(m_RepulsionPoints[ppidx]) + std::get<REPULSION_DIST>(m_RepulsionPoints[qqidx]);
+            rsum = get_r_sum(ppidx, qqidx);
+            // todo: remove this when done testing
+            if (rsum != std::get<REPULSION_DIST>(m_RepulsionPoints[ppidx]) + std::get<REPULSION_DIST>(m_RepulsionPoints[qqidx])) {
+                throw oxDNAException("Mismatch between cached and computed rsum!");
+            }
 
             // compute square of radial cutoff
             // for reasons i don't fully get, radial cutoff is *slightly* less than 1.0
