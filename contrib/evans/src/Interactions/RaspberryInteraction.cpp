@@ -271,6 +271,7 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
         std::vector<std::string> patch_group_lines;
         std::vector<std::string> repulsion_pt_lines;
         std::vector<std::string> signal_passing_operations;
+        std::vector<std::string> patch_interactions;
 
         std::string sz;
         while (std::getline(topology, sz)) {
@@ -293,7 +294,10 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
                     patch_group_lines.push_back(sz);
                 } else if (sz.substr(0, 2) == "iR") {
                     repulsion_pt_lines.push_back(sz);
-                } else {
+                } else if (sz.substr(0, 2) == "iI") {
+                    patch_interactions.push_back(sz);
+                }
+                else {
                     throw oxDNAException("Malformed topology! Line `" + sz + "` does not clearly convey information");
                 }
             }
@@ -410,39 +414,66 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
         // close topology file
         topology.close();
         // TODO: CUDA version of this func will need to cache vs. max patches
-
-        // todo: load manually defined color interactions
-        // define color interactions
-        for (int pi = 0; pi < m_PatchesTypes.size(); pi++) {
-            int pi_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pi]);
-            number pi_dist = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pi]);
-            for (int pj = 0; pj < m_PatchesTypes.size(); pj++) {
-                int pj_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pj]);
-                // use petr + flavio version of default color interactions
-                // number pj_dist = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pj]);
-                if (((abs(pi_color) >= 20) && (pi_color + pj_color == 0)) ||
-                    ((abs(pi_color) < 20) && (pi_color == pj_color))) {
-                    // temporary variable
-                    number r8b10;
-                    number dist_sum = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pi]) + std::get<PPATCH_INT_DIST>(m_PatchesTypes[pi]);
-                    // find interaction strength by computing the geometric mean of the two patch strengths
-                    // todo: allow explicit interaction strength specification
-                    number interaction_strength = sqrt(std::get<PPATCH_STRENGTH>(m_PatchesTypes[pi]) * std::get<PPATCH_STRENGTH>(m_PatchesTypes[pj]));
-                    number dist_cutoff_sqrd = pow(dist_sum, 2) * pow(
-                            log(1.001) - log(MIN_E),
-                            0.2
-                            );
-                    // check energy at expected distance
-                    number e_standard = compute_energy(pow(dist_sum, 2), pow(dist_sum, 10), r8b10);
-                    number e_cutoff = compute_energy(dist_cutoff_sqrd, pow(dist_sum, 10), r8b10);
-                    m_PatchPatchInteractions[{pi, pj}] = {
-                            interaction_strength,
-                            pow(dist_sum, 10),
-                            dist_cutoff_sqrd,
-                            e_cutoff // probably like MIN_E
-                    };
+        std::vector<std::tuple<int, int, number>> patch_interaction_inputs;
+        if (patch_interactions.empty()) {
+            // define color interactions
+            for (int pi = 0; pi < m_PatchesTypes.size(); pi++) {
+                int pi_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pi]);
+                for (int pj = 0; pj < m_PatchesTypes.size(); pj++) {
+                    int pj_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pj]);
+                    // use petr + flavio version of default color interactions
+                    // number pj_dist = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pj]);
+                    if (((abs(pi_color) >= 20) && (pi_color + pj_color == 0)) ||
+                        ((abs(pi_color) < 20) && (pi_color == pj_color))) {
+                        patch_interaction_inputs.emplace_back(pi, pj, 1.);
+                    }
                 }
             }
+        }
+        else {
+            int color1, color2;
+            for (auto &interaction_string : patch_interactions) {
+                std::stringstream ss(interaction_string.substr(2, interaction_string.size() - 2));
+                number strength = 1;
+                if (!(ss >> color1 >> color2)) {
+                    throw oxDNAException("Invalid patch interaction str `" + interaction_string + "`! Does not have two colors");
+                }
+                if (!(ss >> strength)) {
+                    OX_LOG(Logger::LOG_WARNING, "Patch interaction `%s` does not specify strength! Defaulting to 1.", interaction_string.c_str());
+                }
+                // I don't care how inefficient this is, it only runs once per simulation
+                // find all patches with these colors
+                for (int pi = 0; pi < m_PatchesTypes.size(); pi++) {
+                    int pi_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pi]);
+                    if (pi_color == color1) {
+                        for (int pj = 0; pj < m_PatchesTypes.size(); pj++) {
+                            int pj_color = std::get<PPATCH_COLOR>(m_PatchesTypes[pj]);
+                            if (pj_color == color2) {
+                                patch_interaction_inputs.emplace_back(pi, pj, strength);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (auto [pi, pj, strength] : patch_interaction_inputs) {
+            // temporary variable
+            number r8b10;
+            number dist_sum = std::get<PPATCH_INT_DIST>(m_PatchesTypes[pi]) + std::get<PPATCH_INT_DIST>(m_PatchesTypes[pj]);
+            // find interaction strength by computing the geometric mean of the two patch strengths
+            number interaction_strength = strength * sqrt(std::get<PPATCH_STRENGTH>(m_PatchesTypes[pi]) * std::get<PPATCH_STRENGTH>(m_PatchesTypes[pj]));
+            number dist_cutoff_sqrd = pow(dist_sum, 2) * pow(
+                    log(1.001) - log(MIN_E),
+                    0.2
+                    );
+            // check energy at expected distance
+            number e_cutoff = compute_energy(dist_cutoff_sqrd, pow(dist_sum, 10), r8b10);
+            m_PatchPatchInteractions[{pi, pj}] = {
+                interaction_strength,
+                pow(dist_sum, 10),
+                dist_cutoff_sqrd,
+                e_cutoff // probably like MIN_E
+            };
         }
         _has_read_top = true;
     }
@@ -604,6 +635,62 @@ void RaspberryInteraction::readSignalPassingOperation(const std::string &signal_
 }
 
 void RaspberryInteraction::check_input_sanity(std::vector<BaseParticle *> &particles) {
+    // The integrator assumes an isotropic moment of inertia (I_tensor = I * identity).
+    // Warn per particle type if its repulsion site geometry renders this assumption tenuous.
+    for (int iType = 0; iType < (int)m_ParticleTypes.size(); iType++) {
+        const auto& particleType = m_ParticleTypes[iType];
+        const auto& repPtIds = std::get<PTYPE_REP_PTS>(particleType);
+        if ((int)repPtIds.size() < 2) continue;
+
+        // Check 1: center of mass of repulsion sites should be at the particle origin.
+        // If not, the effective rotation center is offset from the interaction geometry center.
+        LR_vector com(0, 0, 0);
+        for (int id : repPtIds) {
+            com += std::get<REPULSION_COORDS>(m_RepulsionPoints[id]);
+        }
+        com = com / (number)repPtIds.size();
+        if (com.norm() > 1e-4) {
+            OX_LOG(Logger::LOG_WARNING,
+                "Particle type %d: repulsion site center of mass is offset from the particle origin by %g. "
+                "Rotational dynamics may be incorrect.",
+                iType, sqrt(com.norm()));
+        }
+
+        // Check 2: inertia tensor anisotropy.
+        // Compute the inertia tensor treating each repulsion site as a unit-mass point.
+        // For isotropy we need I_tensor = lambda * identity (all eigenvalues equal, off-diagonals zero).
+        number Ixx = 0, Iyy = 0, Izz = 0;
+        number Ixy = 0, Ixz = 0, Iyz = 0;
+        for (int id : repPtIds) {
+            const LR_vector& r = std::get<REPULSION_COORDS>(m_RepulsionPoints[id]);
+            Ixx += r.y*r.y + r.z*r.z;
+            Iyy += r.x*r.x + r.z*r.z;
+            Izz += r.x*r.x + r.y*r.y;
+            Ixy -= r.x*r.y;
+            Ixz -= r.x*r.z;
+            Iyz -= r.y*r.z;
+        }
+
+        number lambda = (Ixx + Iyy + Izz) / 3.;
+        if (lambda < 1e-10) continue;
+
+        // Frobenius norm of (I_tensor - lambda * identity).
+        // Off-diagonal terms appear twice in the symmetric matrix.
+        number frob_sq = SQR(Ixx - lambda) + SQR(Iyy - lambda) + SQR(Izz - lambda)
+                       + 2.*SQR(Ixy) + 2.*SQR(Ixz) + 2.*SQR(Iyz);
+        // Normalise by lambda so the metric is dimensionless and scale-independent.
+        number relative_anisotropy = sqrt(frob_sq) / lambda;
+
+        if (relative_anisotropy > 0.1) {
+            OX_LOG(Logger::LOG_WARNING,
+                "Particle type %d: repulsion site distribution is significantly anisotropic "
+                "(relative anisotropy = %.3f, threshold = 0.1). "
+                "The isotropic mass distribution assumption used by the integrator may not hold. "
+                "Consider redistributing repulsion sites more symmetrically.",
+                iType, relative_anisotropy);
+        }
+    }
+
 //    printf("###########\n");
 //    BaseParticle* p = CONFIG_INFO->particles()[0];
 //    BaseParticle* q = CONFIG_INFO->particles()[1];
