@@ -9,7 +9,6 @@
 #include "RaspberryInteraction.h"
 
 #include <regex>
-#include <c++/11/csignal>
 
 #include "Particles/PatchyParticle.h"
 #include "../Particles/RaspberryParticle.h"
