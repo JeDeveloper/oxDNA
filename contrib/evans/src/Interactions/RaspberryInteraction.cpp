@@ -352,9 +352,12 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             std::stringstream ss(particle_type_lines[i].substr(2, particle_type_lines[i].size() - 2));
             int iParticleType;
             std::string patch_id_strs, interaction_pt_id_strs;
-            if (!(ss >> iParticleType >> std::get<PTYPE_INST_COUNT>(m_ParticleTypes[iParticleType]) >> patch_id_strs
-                     >> interaction_pt_id_strs)) {
+            if (!(ss >> iParticleType >> std::get<PTYPE_INST_COUNT>(m_ParticleTypes[iParticleType]) >> patch_id_strs)) {
                 throw oxDNAException("Invalid particle type str `" + particle_type_lines[i] + "`!");
+            }
+            if (!(ss >> interaction_pt_id_strs)) {
+                OX_LOG(Logger::LOG_WARNING, "Particle type str `%s` does not specify interaction points! Defaulting to none.", particle_type_lines[i].c_str());
+                interaction_pt_id_strs = "";
             }
             if (iParticleType >= m_ParticleTypes.size()) {
                 throw oxDNAException("Invalid particle type ID %d", iParticleType);
