@@ -4,6 +4,7 @@
 
 #include "RaspberryPatchyBonds.h"
 #include "../Interactions/RaspberryInteraction.h"
+#include "Utilities/Utils.h"
 
 /**
  * encodes the bonds formed by the pathcy particles as a multidigraph

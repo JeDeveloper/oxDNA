@@ -9,9 +9,12 @@
 #include "RaspberryInteraction.h"
 
 #include <regex>
+#include <c++/11/fstream>
 
 #include "Particles/PatchyParticle.h"
 #include "../Particles/RaspberryParticle.h"
+#include "Utilities/ConfigInfo.h"
+#include "Utilities/Utils.h"
 
 // todo
 //#define PATCHY_CUTOFF 0.18f

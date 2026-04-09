@@ -3,8 +3,8 @@
 //
 #include "RaspberryParticleStates.h"
 
-#include "../Particles/RaspberryParticle.h"
 #include "../Interactions/RaspberryInteraction.h"
+#include "Utilities/Utils.h"
 
 /**
  * encodes the states of the raspberry particles as strings
