@@ -13,7 +13,8 @@
 //     F       -= f          (p pushed away from q)
 //     torque  -= _cross(pw, f)
 //
-// Note: patch locking is NOT implemented on GPU (same as DPS; locking is inherently serial).
+// Patch locking is implemented via a per-patch bond table (d_patch_bonds).
+// RI_update_bonds runs before RI_forces each step, using atomicCAS to safely update bond state.
 //
 
 #include "CUDARaspberryInteraction.h"
@@ -43,6 +44,8 @@ __constant__ float MD_narrow_t0[1], MD_narrow_ts[1], MD_narrow_tc[1],
                    MD_narrow_a[1],  MD_narrow_b[1];
 // Global patchy energy cut (computed from default alpha in RaspberryInteraction::init)
 __constant__ float MD_patch_E_cut[1];
+// Bond energy threshold (m_nPatchyBondEnergyCutoff, default -0.1)
+__constant__ float MD_bond_energy_cut[1];
 
 #include "CUDA/cuda_utils/CUDA_lr_common.cuh"
 
@@ -101,6 +104,64 @@ __device__ __forceinline__
 c_number _compute_patch_energy(c_number dist_sqr, c_number alpha_pow, c_number &r8b10) {
     r8b10 = (dist_sqr * dist_sqr * dist_sqr * dist_sqr) / alpha_pow;
     return (c_number) -1.001 * exp(-r8b10 * dist_sqr);
+}
+
+/* ============================================================
+ * Patch bond table helpers
+ *
+ * Bond slot: unsigned long long per (particle, patch_idx).
+ *   BOND_UNBOUND : slot is free
+ *   pack_bond(q, qq) : slot is locked to particle q, patch qq
+ * ============================================================ */
+
+#define BOND_UNBOUND 0xFFFFFFFFFFFFFFFFULL
+
+__device__ __forceinline__
+unsigned long long pack_bond(int particle, int patch) {
+    return ((unsigned long long)(unsigned int)particle << 32) |
+            (unsigned long long)(unsigned int)patch;
+}
+
+__device__ __forceinline__ int bond_particle(unsigned long long b) {
+    return (int)(unsigned int)(b >> 32);
+}
+
+__device__ __forceinline__ int bond_patch(unsigned long long b) {
+    return (int)(unsigned int)(b & 0xFFFFFFFFULL);
+}
+
+// Attempt to atomically form a bond between slots (p,pp) and (q,qq).
+// Uses two-phase CAS: claim p's slot first, then q's. Rolls back if q's is taken.
+__device__ __forceinline__
+void try_form_bond(unsigned long long *d_patch_bonds, int p, int pp, int q, int qq) {
+    unsigned long long *slot_p = d_patch_bonds + p * CUDARaspberryInteraction::MAX_PATCHES + pp;
+    unsigned long long *slot_q = d_patch_bonds + q * CUDARaspberryInteraction::MAX_PATCHES + qq;
+
+    // Already bonded to each other — nothing to do
+    if (*slot_p == pack_bond(q, qq)) return;
+
+    // Either patch occupied — can't form
+    if (*slot_p != BOND_UNBOUND || *slot_q != BOND_UNBOUND) return;
+
+    // Claim p's patch
+    unsigned long long old_p = atomicCAS(slot_p, BOND_UNBOUND, pack_bond(q, qq));
+    if (old_p != BOND_UNBOUND) return;  // lost race on p's slot
+
+    // Claim q's patch
+    unsigned long long old_q = atomicCAS(slot_q, BOND_UNBOUND, pack_bond(p, pp));
+    if (old_q != BOND_UNBOUND) {
+        // q's slot taken; roll back p's slot
+        atomicCAS(slot_p, pack_bond(q, qq), BOND_UNBOUND);
+    }
+}
+
+// Clear bond between (p,pp) and (q,qq) if it currently exists.
+__device__ __forceinline__
+void try_clear_bond(unsigned long long *d_patch_bonds, int p, int pp, int q, int qq) {
+    unsigned long long *slot_p = d_patch_bonds + p * CUDARaspberryInteraction::MAX_PATCHES + pp;
+    unsigned long long *slot_q = d_patch_bonds + q * CUDARaspberryInteraction::MAX_PATCHES + qq;
+    atomicCAS(slot_p, pack_bond(q, qq), BOND_UNBOUND);
+    atomicCAS(slot_q, pack_bond(p, pp), BOND_UNBOUND);
 }
 
 /* ============================================================
@@ -209,7 +270,9 @@ void _patchy_noangmod_body(c_number4 &ppos, c_number4 &qpos,
                            c_number4 &r,   // min-image p→q
                            c_number4 &F, c_number4 &torque,
                            cudaTextureObject_t tex_patch_pos,
-                           cudaTextureObject_t tex_pp_int) {
+                           cudaTextureObject_t tex_pp_int,
+                           int p_idx, int q_idx,
+                           unsigned long long *d_patch_bonds) {
     int ptype   = get_particle_btype(ppos);
     int qtype   = get_particle_btype(qpos);
     int p_npatch = MD_N_patches[ptype];
@@ -227,6 +290,12 @@ void _patchy_noangmod_body(c_number4 &ppos, c_number4 &qpos,
         };
 
         for (int qq = 0; qq < q_npatch; qq++) {
+            // Lock gate: skip if either patch is bound to a different partner
+            unsigned long long p_bond = d_patch_bonds[p_idx * CUDARaspberryInteraction::MAX_PATCHES + pp];
+            if (p_bond != BOND_UNBOUND && p_bond != pack_bond(q_idx, qq)) continue;
+            unsigned long long q_bond = d_patch_bonds[q_idx * CUDARaspberryInteraction::MAX_PATCHES + qq];
+            if (q_bond != BOND_UNBOUND && q_bond != pack_bond(p_idx, pp)) continue;
+
             int q_ptid = MD_patch_type_ids[qtype][qq];
 
             float4 pp_int = tex1Dfetch<float4>(tex_pp_int,
@@ -285,7 +354,9 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
                          c_number4 &F, c_number4 &torque,
                          cudaTextureObject_t tex_patch_pos,
                          cudaTextureObject_t tex_patch_ori,
-                         cudaTextureObject_t tex_pp_int) {
+                         cudaTextureObject_t tex_pp_int,
+                         int p_idx, int q_idx,
+                         unsigned long long *d_patch_bonds) {
     int ptype   = get_particle_btype(ppos);
     int qtype   = get_particle_btype(qpos);
     int p_npatch = MD_N_patches[ptype];
@@ -319,6 +390,12 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
         };
 
         for (int qq = 0; qq < q_npatch; qq++) {
+            // Lock gate: skip if either patch is bound to a different partner
+            unsigned long long p_bond = d_patch_bonds[p_idx * CUDARaspberryInteraction::MAX_PATCHES + pp];
+            if (p_bond != BOND_UNBOUND && p_bond != pack_bond(q_idx, qq)) continue;
+            unsigned long long q_bond = d_patch_bonds[q_idx * CUDARaspberryInteraction::MAX_PATCHES + qq];
+            if (q_bond != BOND_UNBOUND && q_bond != pack_bond(p_idx, pp)) continue;
+
             int q_ptid = MD_patch_type_ids[qtype][qq];
 
             float4 pp_int = tex1Dfetch<float4>(tex_pp_int,
@@ -435,6 +512,7 @@ void RI_forces(c_number4 *poss, GPU_quat *orientations,
                int *matrix_neighs, int *number_neighs,
                cudaTextureObject_t tex_patch_pos, cudaTextureObject_t tex_patch_ori,
                cudaTextureObject_t tex_rep_pts,   cudaTextureObject_t tex_pp_int,
+               unsigned long long *d_patch_bonds,
                CUDABox *box) {
     if (IND >= MD_N[0]) return;
 
@@ -469,17 +547,160 @@ void RI_forces(c_number4 *poss, GPU_quat *orientations,
         if (MD_angmod[0]) {
             _patchy_angmod_body(ppos, qpos, a1, a2, a3, b1, b2, b3,
                                 r, F, T,
-                                tex_patch_pos, tex_patch_ori, tex_pp_int);
+                                tex_patch_pos, tex_patch_ori, tex_pp_int,
+                                IND, k, d_patch_bonds);
         } else {
             _patchy_noangmod_body(ppos, qpos, a1, a2, a3, b1, b2, b3,
                                   r, F, T,
-                                  tex_patch_pos, tex_pp_int);
+                                  tex_patch_pos, tex_pp_int,
+                                  IND, k, d_patch_bonds);
         }
     }
 
     forces [IND] = F;
     // Convert accumulated world-frame torque to body frame
     torques[IND] = _vectors_transpose_c_number4_product(a1, a2, a3, T);
+}
+
+/* ============================================================
+ * Bond update kernel: recomputes patch energies and updates
+ * d_patch_bonds to reflect which patches are currently bonded.
+ * Must run before RI_forces each step.
+ * ============================================================ */
+__global__
+void RI_update_bonds(c_number4 *poss, GPU_quat *orientations,
+                     int *matrix_neighs, int *number_neighs,
+                     cudaTextureObject_t tex_patch_pos,
+                     cudaTextureObject_t tex_patch_ori,
+                     cudaTextureObject_t tex_pp_int,
+                     unsigned long long *d_patch_bonds,
+                     CUDABox *box) {
+    if (IND >= MD_N[0]) return;
+
+    c_number4 ppos = poss[IND];
+    GPU_quat  po   = orientations[IND];
+    c_number4 a1, a2, a3;
+    get_vectors_from_quat(po, a1, a2, a3);
+
+    int ptype    = get_particle_btype(ppos);
+    int p_npatch = MD_N_patches[ptype];
+
+    int num_neighs = NUMBER_NEIGHBOURS(IND, number_neighs);
+    for (int j = 0; j < num_neighs; j++) {
+        int k = NEXT_NEIGHBOUR(IND, j, matrix_neighs);
+        if (k == IND) continue;
+
+        c_number4 qpos = poss[k];
+        GPU_quat  qo   = orientations[k];
+        c_number4 b1, b2, b3;
+        get_vectors_from_quat(qo, b1, b2, b3);
+
+        c_number4 r    = box->minimum_image(ppos, qpos);
+        c_number sqr_r = CUDA_DOT(r, r);
+        if (sqr_r >= MD_sqr_rcut[0]) continue;
+
+        int qtype    = get_particle_btype(qpos);
+        int q_npatch = MD_N_patches[qtype];
+
+        c_number rdist = sqrtf(sqr_r);
+        c_number inv_r = 1.f / rdist;
+        c_number4 r_hat = { r.x*inv_r, r.y*inv_r, r.z*inv_r, 0.f };
+
+        for (int pp = 0; pp < p_npatch; pp++) {
+            int p_ptid = MD_patch_type_ids[ptype][pp];
+
+            float4 p_bp = tex1Dfetch<float4>(tex_patch_pos,
+                              pp + ptype * CUDARaspberryInteraction::MAX_PATCHES);
+            c_number4 p_patch_pos = {
+                a1.x*p_bp.x + a2.x*p_bp.y + a3.x*p_bp.z,
+                a1.y*p_bp.x + a2.y*p_bp.y + a3.y*p_bp.z,
+                a1.z*p_bp.x + a2.z*p_bp.y + a3.z*p_bp.z, 0.f
+            };
+
+            c_number4 p_patch_a1 = { 0.f, 0.f, 0.f, 0.f };
+            if (MD_angmod[0]) {
+                float4 p_bo = tex1Dfetch<float4>(tex_patch_ori,
+                                  pp + ptype * CUDARaspberryInteraction::MAX_PATCHES);
+                p_patch_a1 = {
+                    a1.x*p_bo.x + a2.x*p_bo.y + a3.x*p_bo.z,
+                    a1.y*p_bo.x + a2.y*p_bo.y + a3.y*p_bo.z,
+                    a1.z*p_bo.x + a2.z*p_bo.y + a3.z*p_bo.z, 0.f
+                };
+            }
+
+            for (int qq = 0; qq < q_npatch; qq++) {
+                // Respect existing locks: skip pairs where either patch is bound elsewhere
+                unsigned long long p_bond = d_patch_bonds[IND * CUDARaspberryInteraction::MAX_PATCHES + pp];
+                if (p_bond != BOND_UNBOUND && p_bond != pack_bond(k, qq)) continue;
+                unsigned long long q_bond = d_patch_bonds[k * CUDARaspberryInteraction::MAX_PATCHES + qq];
+                if (q_bond != BOND_UNBOUND && q_bond != pack_bond(IND, pp)) continue;
+
+                int q_ptid = MD_patch_type_ids[qtype][qq];
+
+                float4 pp_int = tex1Dfetch<float4>(tex_pp_int,
+                                    p_ptid * CUDARaspberryInteraction::MAX_PATCH_TYPES + q_ptid);
+                c_number eps          = pp_int.x;
+                c_number alpha_pow    = pp_int.y;
+                c_number max_dist_sqr = pp_int.z;
+
+                if (eps == 0.f) continue;
+
+                float4 q_bp = tex1Dfetch<float4>(tex_patch_pos,
+                                  qq + qtype * CUDARaspberryInteraction::MAX_PATCHES);
+                c_number4 q_patch_pos = {
+                    b1.x*q_bp.x + b2.x*q_bp.y + b3.x*q_bp.z,
+                    b1.y*q_bp.x + b2.y*q_bp.y + b3.y*q_bp.z,
+                    b1.z*q_bp.x + b2.z*q_bp.y + b3.z*q_bp.z, 0.f
+                };
+
+                c_number4 patch_dist = {
+                    r.x + q_patch_pos.x - p_patch_pos.x,
+                    r.y + q_patch_pos.y - p_patch_pos.y,
+                    r.z + q_patch_pos.z - p_patch_pos.z, 0.f
+                };
+                c_number dist_sqr = CUDA_DOT(patch_dist, patch_dist);
+                if (dist_sqr >= max_dist_sqr) {
+                    // Out of range — clear bond if it exists between these two patches
+                    try_clear_bond(d_patch_bonds, IND, pp, k, qq);
+                    continue;
+                }
+
+                c_number r8b10;
+                c_number E0       = _compute_patch_energy(dist_sqr, alpha_pow, r8b10);
+                c_number exp_part = eps * E0;
+
+                c_number e_pair;
+                if (MD_angmod[0]) {
+                    float4 q_bo = tex1Dfetch<float4>(tex_patch_ori,
+                                      qq + qtype * CUDARaspberryInteraction::MAX_PATCHES);
+                    c_number4 q_patch_a1 = {
+                        b1.x*q_bo.x + b2.x*q_bo.y + b3.x*q_bo.z,
+                        b1.y*q_bo.x + b2.y*q_bo.y + b3.y*q_bo.z,
+                        b1.z*q_bo.x + b2.z*q_bo.y + b3.z*q_bo.z, 0.f
+                    };
+
+                    c_number cosa1 = fminf(fmaxf(CUDA_DOT(p_patch_a1, r_hat), -1.f), 1.f);
+                    c_number cosb1 = fminf(fmaxf(-CUDA_DOT(q_patch_a1, r_hat), -1.f), 1.f);
+                    c_number ta1   = acosf(cosa1);
+                    c_number tb1   = acosf(cosb1);
+                    c_number fa1   = _V_mod(ta1, MD_narrow_t0[0], MD_narrow_ts[0],
+                                            MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
+                    c_number fb1   = _V_mod(tb1, MD_narrow_t0[0], MD_narrow_ts[0],
+                                            MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
+                    c_number f1    = -eps * (exp_part - MD_patch_E_cut[0]);
+                    e_pair = exp_part * f1 * fa1 * fb1;
+                } else {
+                    e_pair = exp_part;
+                }
+
+                if (e_pair < MD_bond_energy_cut[0]) {
+                    try_form_bond(d_patch_bonds, IND, pp, k, qq);
+                } else {
+                    try_clear_bond(d_patch_bonds, IND, pp, k, qq);
+                }
+            }
+        }
+    }
 }
 
 /* ============================================================
@@ -505,6 +726,9 @@ CUDARaspberryInteraction::~CUDARaspberryInteraction() {
     if (_d_pp_int) {
         CUDA_SAFE_CALL(cudaFree(_d_pp_int));
         cudaDestroyTextureObject(_tex_pp_int);
+    }
+    if (_d_patch_bonds) {
+        CUDA_SAFE_CALL(cudaFree(_d_patch_bonds));
     }
 }
 
@@ -714,19 +938,37 @@ void CUDARaspberryInteraction::cuda_init(int N) {
                                       cudaCreateChannelDesc(32,32,32,32,cudaChannelFormatKindFloat),
                                       _d_pp_int, sz);
     }
+
+    // ---- Allocate and initialize patch bond table ----
+    {
+        size_t bond_sz = (size_t)N * MAX_PATCHES * sizeof(unsigned long long);
+        CUDA_SAFE_CALL(GpuUtils::LR_cudaMalloc(&_d_patch_bonds, bond_sz));
+        CUDA_SAFE_CALL(cudaMemset(_d_patch_bonds, 0xFF, bond_sz)); // 0xFF...FF = BOND_UNBOUND
+
+        float bond_e_cut = (float)m_nPatchyBondEnergyCutoff;
+        CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_bond_energy_cut, &bond_e_cut, sizeof(float)));
+    }
 }
 
 void CUDARaspberryInteraction::compute_forces(CUDABaseList *lists, c_number4 *d_poss,
                                               GPU_quat *d_orientations,
                                               c_number4 *d_forces, c_number4 *d_torques,
                                               LR_bonds *d_bonds, CUDABox *d_box) {
-    int N = CUDABaseInteraction::_N;
+    // Phase 1: update patch bond table from current geometry
+    RI_update_bonds
+        <<<_launch_cfg.blocks, _launch_cfg.threads_per_block>>>
+        (d_poss, d_orientations,
+         lists->d_matrix_neighs, lists->d_number_neighs,
+         _tex_patch_pos, _tex_patch_ori, _tex_pp_int,
+         _d_patch_bonds, d_box);
+    CUT_CHECK_ERROR("RI_update_bonds error");
 
+    // Phase 2: compute forces using updated bond table for lock gating
     RI_forces
         <<<_launch_cfg.blocks, _launch_cfg.threads_per_block>>>
         (d_poss, d_orientations, d_forces, d_torques,
          lists->d_matrix_neighs, lists->d_number_neighs,
          _tex_patch_pos, _tex_patch_ori, _tex_rep_pts, _tex_pp_int,
-         d_box);
+         _d_patch_bonds, d_box);
     CUT_CHECK_ERROR("RI_forces error");
 }

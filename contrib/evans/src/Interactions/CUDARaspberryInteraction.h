@@ -24,7 +24,8 @@
  *   tex_pp_int   [ptype * MAX_PATCH_TYPES + qtype  ] : float4  (eps, alpha_pow, max_dist_sqr, unused)
  *
  * Patch-type IDs for each (species, patch_index) are in MD_patch_type_ids[][].
- * Note: patch locking is NOT implemented on GPU (same approach as DPS).
+ * Patch locking is implemented on GPU via a per-patch bond table (_d_patch_bonds).
+ * Bond state is updated each step in RI_update_bonds before forces are computed.
  */
 class CUDARaspberryInteraction : public CUDABaseInteraction, public RaspberryInteraction {
 protected:
@@ -42,6 +43,10 @@ protected:
     // Indexed flat as [p_patch_type_id * MAX_PATCH_TYPES + q_patch_type_id]
     float4 *_d_pp_int = nullptr;
     cudaTextureObject_t _tex_pp_int = 0;
+
+    // Patch bond table: d_patch_bonds[particle_idx * MAX_PATCHES + patch_idx]
+    // Stores packed (partner_particle << 32 | partner_patch), or BOND_UNBOUND if free.
+    unsigned long long *_d_patch_bonds = nullptr;
 
 public:
     static const int MAX_PATCHES     = 20;
