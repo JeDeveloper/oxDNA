@@ -2,9 +2,12 @@
 
 #include "../Particles/DNANucleotide.h"
 #include "../Utilities/TopologyParser.h"
+#include "../Utilities/ConfigInfo.h"
+#include "../Utilities/Utils.h"
 
 #include <fstream>
 #include <cfloat>
+#include <iostream>
 
 DNAInteraction::DNAInteraction() :
 				BaseInteraction(),
@@ -209,7 +212,7 @@ DNAInteraction::DNAInteraction() :
 		}
 		assert(lowlimit < upplimit);
 	}
-	_grooving = false;
+	_grooving = 0;
 	_allow_broken_fene = false;
 	_generate_consider_bonded_interactions = true;
 
@@ -293,6 +296,7 @@ void DNAInteraction::get_settings(input_file &inp) {
 }
 
 void DNAInteraction::init() {
+	_initialised = true;
 	// we choose rcut as the max of the range interaction of excluded
 	// volume between backbones and hydrogen bonding
 	number rcutback;
@@ -323,7 +327,7 @@ void DNAInteraction::init() {
 	// epsilon regarding interactions between true bases (i.e. the
 	// interactions between dummy bases or regular bases and dummy bases
 	// keeps the default value)
-	if(!_average) {
+	if(!_average && _grooving != 2) {   //for oxdna3 we use tetramer dependent stacking strength
 		char key[256];
 		float tmp_value, stck_fact_eps;
 
@@ -373,11 +377,13 @@ void DNAInteraction::init() {
 }
 
 void DNAInteraction::_on_T_update() {
-	_T = CONFIG_INFO->temperature();
-	number T_in_C = _T * 3000 - 273.15;
-	number T_in_K = _T * 3000;
-	OX_LOG(Logger::LOG_INFO, "Temperature change detected (new temperature: %.2lf C, %.2lf K), re-initialising the DNA interaction", T_in_C, T_in_K);
-	init();
+	// we only care about temperature changes if the interaction has been already initialised
+	if(_initialised) {
+		_T = CONFIG_INFO->temperature();
+		number T_in_C = _T * 3000 - 273.15;
+		number T_in_K = _T * 3000;
+		OX_LOG(Logger::LOG_INFO, "Temperature change detected (new temperature: %.2lf C, %.2lf K), re-initialising the DNA interaction", T_in_C, T_in_K);
+	}
 }
 
 bool DNAInteraction::_check_bonded_neighbour(BaseParticle **p, BaseParticle **q, bool compute_r) {
@@ -1165,6 +1171,39 @@ number DNAInteraction::_coaxial_stacking(BaseParticle *p, BaseParticle *q, bool 
 	return energy;
 }
 
+number DNAInteraction::_custom_f4 (number cost, int i) { 
+	return this->_mesh_f4[i].query(cost);
+}
+
+number DNAInteraction::_custom_f4D (number cost, int i) {
+	return this->_mesh_f4[i].query_derivative(cost);
+}
+
+number DNAInteraction::_repulsive_lj(const LR_vector &r, LR_vector &force, number sigma, number rstar, number b, number rc, bool update_forces) {
+	// this is a bit faster than calling r.norm()
+	number rnorm = SQR(r.x) + SQR(r.y) + SQR(r.z);
+	number energy = (number) 0;
+
+	if(rnorm < SQR(rc)) {
+		if(rnorm > SQR(rstar)) {
+			number rmod = sqrt(rnorm);
+			number rrc = rmod - rc;
+			energy = EXCL_EPS * b * SQR(rrc);
+			if(update_forces) force = -r * (2 * EXCL_EPS * b * rrc / rmod);
+		}
+		else {
+			number tmp = SQR(sigma) / rnorm;
+			number lj_part = tmp * tmp * tmp;
+			energy = 4 * EXCL_EPS * (SQR(lj_part) - lj_part);
+			if(update_forces) force = -r * (24 * EXCL_EPS * (lj_part - 2*SQR(lj_part)) / rnorm);
+		}
+	}
+
+	if(update_forces && energy == (number) 0) force.x = force.y = force.z = (number) 0;
+
+	return energy;
+}
+
 number DNAInteraction::pair_interaction(BaseParticle *p, BaseParticle *q, bool compute_r, bool update_forces) {
 	if(p->is_bonded(q)) {
 		return pair_interaction_bonded(p, q, compute_r, update_forces);
@@ -1275,36 +1314,40 @@ number DNAInteraction::_f2D(number r, int type) {
 	return val;
 }
 
-number DNAInteraction::_fakef4(number t, void *par) {
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1.0001))
-		throw oxDNAException("In function DNAInteraction::_fakef4() t was found to be out of the range [-1,1] by a large amount, t = %g", t);
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1))
-		t = (number) copysign(1, t);
-	return _f4(acos(t), *((int*) par));
+number DNAInteraction::_fakef4(number cost, void *par) {
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1.0001))
+		throw oxDNAException("In function DNAInteraction::_fakef4() t was found to be out of the range [-1,1] by a large amount, t = %g", cost);
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1))
+		cost = (number) copysign(1, cost);
+	number t = Utils::safe_acos(cost);
+	return _f4(t, *((int*) par));
 }
 
-number DNAInteraction::_fakef4D(number t, void *par) {
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1.0001))
-		throw oxDNAException("In function DNAInteraction::_fakef4() t was found to be out of the range [-1,1] by a large amount, t = %g", t);
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1))
-		t = (number) copysign(1, t);
-	return -_f4Dsin(acos(t), *((int*) par));
+number DNAInteraction::_fakef4D(number cost, void *par) {
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1.0001))
+		throw oxDNAException("In function DNAInteraction::_fakef4() t was found to be out of the range [-1,1] by a large amount, t = %g", cost);
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1))
+		cost = (number) copysign(1, cost);
+	number t = Utils::safe_acos(cost);
+	return -_f4Dsin(t, *((int*) par));
 }
 
-number DNAInteraction::_fakef4_cxst_t1(number t, void *par) {
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1.0001))
-		throw oxDNAException("In function DNAInteraction::_fakef4() t was found to be out of the range [-1,1] by a large amount, t = %g", t);
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1))
-		t = (number) copysign(1, t);
-	return _f4(acos(t), *((int*) par)) + _f4(2 * PI - acos(t), *((int*) par));
+number DNAInteraction::_fakef4_cxst_t1(number cost, void *par) {
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1.0001))
+		throw oxDNAException("In function DNAInteraction::_fakef4_cxst_t1() cost was found to be out of the range [-1,1] by a large amount, t = %g", cost);
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1))
+		cost = (number) copysign(1, cost);
+	number t = Utils::safe_acos(cost);
+	return _f4(t, *((int*) par)) + _f4(2 * PI - t, *((int*) par));
 }
 
-number DNAInteraction::_fakef4D_cxst_t1(number t, void *par) {
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1.0001))
-		throw oxDNAException("In function DNAInteraction::_fakef4() t was found to be out of the range [-1,1] by a large amount, t = %g", t);
-	if((*(int*) par == CXST_F4_THETA1) && (t * t > 1))
-		t = (number) copysign(1, t);
-	return -_f4Dsin(acos(t), *((int*) par)) - _f4Dsin(2 * PI - acos(t), *((int*) par));
+number DNAInteraction::_fakef4D_cxst_t1(number cost, void *par) {
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1.0001))
+		throw oxDNAException("In function DNAInteraction::_fakef4D_cxst_t1() cost was found to be out of the range [-1,1] by a large amount, t = %g", cost);
+	if((*(int*) par == CXST_F4_THETA1) && (cost * cost > 1))
+		cost = (number) copysign(1, cost);
+	number t = Utils::safe_acos(cost);
+	return -_f4Dsin(t, *((int*) par)) - _f4Dsin(2 * PI - t, *((int*) par));
 }
 
 number DNAInteraction::_f4(number t, int type) {
@@ -1456,6 +1499,10 @@ void DNAInteraction::allocate_particles(std::vector<BaseParticle*> &particles) {
 	}
 }
 
+bool DNAInteraction::has_custom_stress_tensor() const {
+	return true;
+}
+
 void DNAInteraction::read_topology(int *N_strands, std::vector<BaseParticle*> &particles) {
 	BaseInteraction::read_topology(N_strands, particles);
 
@@ -1486,11 +1533,10 @@ void DNAInteraction::read_topology(int *N_strands, std::vector<BaseParticle*> &p
 			}
 
 			int N_in_strand = btypes.size();
+			if(current_idx + N_in_strand > parser.N()) {
+				throw oxDNAException("Too many particles found in the topology file (should be %d), aborting", parser.N());
+			}
 			for(int i = 0; i < N_in_strand; i++, current_idx++) {
-				if(current_idx == parser.N()) {
-					throw oxDNAException("Too many particles found in the topology file (should be %d), aborting", parser.N());
-				}
-
 				BaseParticle *p = particles[current_idx];
 				p->strand_id = ns;
 				p->btype = btypes[i];

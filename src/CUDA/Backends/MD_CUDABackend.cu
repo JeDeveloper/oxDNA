@@ -9,7 +9,6 @@
 
 #include "../CUDAForces.h"
 #include "CUDA_MD.cuh"
-#include "../CUDA_base_interactions.h"
 #include "../../Interactions/DNAInteraction.h"
 #include "../../Observables/ObservableOutput.h"
 #include "../Thermostats/CUDAThermostatFactory.h"
@@ -23,8 +22,7 @@
 MD_CUDABackend::MD_CUDABackend() :
 				MDBackend(),
 				CUDABaseBackend(),
-				_max_ext_forces(0),
-				_error_conf_file("error_conf.dat") {
+				_max_ext_forces(0) {
 	_use_edge = false;
 	_any_rigid_body = false;
 
@@ -45,8 +43,6 @@ MD_CUDABackend::MD_CUDABackend() :
 	_barostat_attempts = _barostat_accepted = 0;
 
 	_print_energy = false;
-
-	_obs_output_error_conf = nullptr;
 
 	// on CUDA the timers need to be told to explicitly synchronise on the GPU
 	TimingManager::instance()->enable_sync();
@@ -90,10 +86,6 @@ MD_CUDABackend::~MD_CUDABackend() {
 		delete[] _h_Ls;
 		delete[] _h_forces;
 		delete[] _h_torques;
-	}
-
-	if(_obs_output_error_conf != nullptr) {
-		delete _obs_output_error_conf;
 	}
 }
 
@@ -179,6 +171,15 @@ void MD_CUDABackend::_apply_external_forces_changes() {
 					RepulsiveSphereSmooth *p_force = (RepulsiveSphereSmooth *) p->ext_forces[j];
 					init_RepulsiveSphereSmooth_from_CPU(&cuda_force->repulsivespheresmooth, p_force);
 				}
+				
+				else if(force_type == typeid(RepulsiveSphereMoving)) {
+					RepulsiveSphereMoving *p_force = (RepulsiveSphereMoving *) p->ext_forces[j];
+					init_RepulsiveSphereMoving_from_CPU(&cuda_force->repulsivespheremoving, p_force);
+				}
+				else if(force_type == typeid(RepulsiveKeplerPoinsot)) {
+					RepulsiveKeplerPoinsot *p_force = (RepulsiveKeplerPoinsot *) p->ext_forces[j];
+					init_RepulsiveKeplerPoinsot_from_CPU(&cuda_force->repulsivekeplerpoinsot, p_force);
+				}
 				else if(force_type == typeid(LJWall)) {
 					LJWall *p_force = (LJWall *) p->ext_forces[j];
 					init_LJWall_from_CPU(&cuda_force->ljwall, p_force);
@@ -236,12 +237,12 @@ void MD_CUDABackend::apply_changes_to_simulation_data() {
 		_h_particles_to_mols[i] = p->strand_id;
 
 		// convert index and type into a float
-		int msk = -1 << 22; // binary mask: all 1's and 22 0's;
+		const unsigned int mask22 = 0x003FFFFF;   // bottom 22 bits
 		// btype has a sign, and thus has to go first
-		_h_poss[i].w = GpuUtils::int_as_float((p->btype << 22) | ((~msk) & p->index));
+		_h_poss[i].w = GpuUtils::int_as_float((p->btype << 22) | (mask22 & p->index));
 		// we immediately check that the index and base type that we read are sensible
 		int mybtype = (GpuUtils::float_as_int(_h_poss[i].w)) >> 22;
-		int myindex = (GpuUtils::float_as_int(_h_poss[i].w)) & (~msk);
+		int myindex = (GpuUtils::float_as_int(_h_poss[i].w)) & mask22;
 		if(p->btype != mybtype) {
 			throw oxDNAException("Could not treat the type (A, C, G, T or something specific) of particle %d; On CUDA, integer base types cannot be larger than 511 or smaller than -511");
 		}
@@ -315,8 +316,8 @@ void MD_CUDABackend::apply_simulation_data_changes() {
 		// since we may have been sorted all the particles in a different order
 		// we first take the particle index from the 4th component of its
 		// position, and then use that index to access the right BaseParticle pointer
-		int msk = (-1 << 22);
-		int newindex = ((GpuUtils::float_as_int(_h_poss[i].w)) & (~msk));
+		const unsigned int mask22 = 0x003FFFFF;   // bottom 22 bits
+		int newindex = ((GpuUtils::float_as_int(_h_poss[i].w)) & mask22);
 		_h_gpu_index[i] = newindex;
 		_h_cpu_index[newindex] = i;
 		BaseParticle *p = _particles[newindex];
@@ -335,14 +336,14 @@ void MD_CUDABackend::apply_simulation_data_changes() {
 			p->n3 = P_VIRTUAL;
 		}
 		else {
-			int n3index = ((GpuUtils::float_as_int(_h_poss[_h_bonds[i].n3].w)) & (~msk));
+			int n3index = ((GpuUtils::float_as_int(_h_poss[_h_bonds[i].n3].w)) & mask22);
 			p->n3 = _particles[n3index];
 		}
 		if(_h_bonds[i].n5 == P_INVALID) {
 			p->n5 = P_VIRTUAL;
 		}
 		else {
-			int n5index = ((GpuUtils::float_as_int(_h_poss[_h_bonds[i].n5].w)) & (~msk));
+			int n5index = ((GpuUtils::float_as_int(_h_poss[_h_bonds[i].n5].w)) & mask22);
 			p->n5 = _particles[n5index];
 		}
 
@@ -574,8 +575,8 @@ void MD_CUDABackend::sim_step() {
 		}
 		catch (oxDNAException &e) {
 			apply_simulation_data_changes();
-			_obs_output_error_conf->print_output(current_step());
-			throw oxDNAException("%s ----> The last configuration has been printed to %s", e.what(), _error_conf_file.c_str());
+			std::string filename = print_error_conf();
+			throw oxDNAException("%s ----> the last configuration has been printed to %s", e.what(), filename.c_str());
 		}
 		_d_are_lists_old[0] = false;
 		_N_updates++;
@@ -634,10 +635,6 @@ void MD_CUDABackend::get_settings(input_file &inp) {
 		_cuda_barostat_thermostat->get_settings(*inp_file);
 	}
 
-	std::string init_string = Utils::sformat("{\n\tname = %s\n\tprint_every = 0\n\tonly_last = 1\n}\n", _error_conf_file.c_str());
-	_obs_output_error_conf = new ObservableOutput(init_string);
-	_obs_output_error_conf->add_observable("type = configuration");
-
 	// if we want to limit the calculations done on CPU we clear the default ObservableOutputs and tell them to just print the timesteps (and, for constant-pressure, simulations, also the density)
 	if(_avoid_cpu_calculations) {
 		_obs_output_file->clear();
@@ -681,8 +678,6 @@ void MD_CUDABackend::init() {
 	_h_Ls = new c_number4[N()];
 	_h_forces = new c_number4[N()];
 	_h_torques = new c_number4[N()];
-
-	_obs_output_error_conf->init();
 
 	// initialise the GPU array containing the size of the molecules
 	std::vector<int> mol_sizes;

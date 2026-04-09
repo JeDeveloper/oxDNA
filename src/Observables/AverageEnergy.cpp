@@ -7,6 +7,7 @@
 
 #include "AverageEnergy.h"
 
+#include <algorithm>
 #include <sstream>
 #include <fstream>
 
@@ -20,7 +21,7 @@ AverageEnergy::~AverageEnergy() {
 
 void AverageEnergy::init() {
 	BaseObservable::init();
-	ifstream list;
+	std::ifstream list;
 	list.open(_list_file);
 	int n;
 	if(!list) {

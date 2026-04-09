@@ -1243,6 +1243,7 @@ void PatchyShapeInteraction::get_settings(input_file &inp) {
 
     std::string use_torsion;
     if (getInputString(&inp, "use_torsion", use_torsion, 0) == KEY_FOUND) {
+        std::transform(use_torsion.begin(), use_torsion.end(), use_torsion.begin(), ::tolower);
         if (use_torsion == "0" || use_torsion == "none" || use_torsion == "false"){
             _use_torsion = NO_TORSION;
         } else if (use_torsion == "1" || use_torsion == "true") {
@@ -1924,7 +1925,6 @@ void PatchyShapeInteraction::_init_patchy_locks(std::shared_ptr<ConfigInfo> Info
 
 void PatchyShapeInteraction::check_patchy_locks(std::shared_ptr<ConfigInfo> Info)
 {
-	printf ("here i am...\n");
 	if (Info == NULL) {
 		Info = ConfigInfo::instance();
 	}
@@ -1956,20 +1956,22 @@ void PatchyShapeInteraction::check_patchy_locks(std::shared_ptr<ConfigInfo> Info
 
 						//This can be either already locked:
 						if (!mutual_lock and !external_lock) {
-							printf("particles %d (patch %d) and %d (patch %d) have energy %g\n", pid, ppatch, qid, qqpatch, new_ene);
+							OX_LOG(Logger::LOG_WARNING, "particles %d (patch %d) and %d (patch %d) have energy %g\n", pid, ppatch, qid, qqpatch, new_ene);
 							int tmpi, tmpj;
 							p->patches[ppatch].get_lock(tmpi, tmpj);
-							printf("%d(%d) locked to %d(%d)\n", pid, ppatch, tmpi, tmpj);
+                            OX_LOG(Logger::LOG_WARNING, "%d(%d) locked to %d(%d)\n", pid, ppatch, tmpi, tmpj);
 							qq->patches[qqpatch].get_lock(tmpi, tmpj);
-							printf("%d(%d) locked to %d(%d)\n", qid, qqpatch, tmpi, tmpj);
-							throw oxDNAException("Found a case where lock is missing: %d (%d) - %d (%d), %f ",pid,ppatch,qid,qqpatch, new_ene);
-						}
+                            OX_LOG(Logger::LOG_WARNING, "%d(%d) locked to %d(%d)\n", qid, qqpatch, tmpi, tmpj);
+                            // for DNAanalysis purposes warning if a lock is missing I'm changing this to a warning
+//							throw oxDNAException("Found a case where lock is missing: %d (%d) - %d (%d), %f ",pid,ppatch,qid,qqpatch, new_ene);
+                            OX_LOG(Logger::LOG_ERROR, "Found a case where lock is missing: %d (%d) - %d (%d), e=%f\nIf this is a DNAnalysis job, you can ignore this", pid,ppatch,qid,qqpatch, new_ene);
+                        }
 					}
 					else //they should not be locked to each other!
 					{
 						if(p->patches[ppatch].locked_to(qid,qqpatch) || qq->patches[qqpatch].locked_to(pid,ppatch))
 						{
-							throw oxDNAException("Found a wrong lock, they should be not locked: %d (%d) - %d (%d), %f",pid,ppatch,qid,qqpatch,new_ene);
+							OX_LOG(Logger::LOG_ERROR, "Found a wrong lock, they should be not locked: %d (%d) - %d (%d), %f",pid,ppatch,qid,qqpatch,new_ene);
 						}
 
 					}
