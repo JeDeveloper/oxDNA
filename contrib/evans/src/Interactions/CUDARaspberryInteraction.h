@@ -48,6 +48,14 @@ protected:
     // Stores packed (partner_particle << 32 | partner_patch), or BOND_UNBOUND if free.
     unsigned long long *_d_patch_bonds = nullptr;
 
+    // Host-side mirror of _d_patch_bonds, downloaded each step in compute_forces().
+    // Decoded and pushed into _cpu_interaction->m_PatchyBonds each step.
+    std::vector<unsigned long long> _h_patch_bonds;
+
+    // Pointer to the CPU RaspberryInteraction (config_info->interaction), cached in cuda_init().
+    // Used to update its m_PatchyBonds from the GPU bond table each step.
+    RaspberryInteraction *_cpu_interaction = nullptr;
+
 public:
     static const int MAX_PATCHES     = 20;
     static const int MAX_REP_PTS     = 30;

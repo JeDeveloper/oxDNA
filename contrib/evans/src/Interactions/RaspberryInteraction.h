@@ -330,6 +330,12 @@ public:
     }
     const std::vector<ParticlePatch>& getBondsFor(int idx) const;
 
+    // Called by CUDARaspberryInteraction each step to push GPU bond state into this object.
+    // Without this, m_PatchyBonds is only updated during check_energy_every CPU recomputation.
+    void set_all_patchy_bonds(std::vector<std::vector<ParticlePatch>> bonds) {
+        m_PatchyBonds = std::move(bonds);
+    }
+
     static number compute_energy(number patch_dist_sqr, number alpha_exp, number &r8b10) ;
 
     // signal passing stuff

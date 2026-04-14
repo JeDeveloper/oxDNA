@@ -21,6 +21,7 @@
 
 #include "CUDA/Lists/CUDASimpleVerletList.h"
 #include "CUDA/Lists/CUDANoList.h"
+#include "Utilities/ConfigInfo.h"
 
 #include <thrust/device_ptr.h>
 #include <thrust/fill.h>
@@ -948,6 +949,18 @@ void CUDARaspberryInteraction::cuda_init(int N) {
         float bond_e_cut = (float)m_nPatchyBondEnergyCutoff;
         CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_bond_energy_cut, &bond_e_cut, sizeof(float)));
     }
+
+    // Pre-allocate host mirror for bond table (avoids per-step malloc in compute_forces).
+    _h_patch_bonds.assign((size_t)N * MAX_PATCHES, 0xFFFFFFFFFFFFFFFFULL);
+
+    // Cache a pointer to the CPU RaspberryInteraction so compute_forces() can push
+    // updated bond data into it each step (m_PatchyBonds is protected, but we are a
+    // derived class so we can access it on another RaspberryInteraction* via the setter).
+    _cpu_interaction = dynamic_cast<RaspberryInteraction *>(CONFIG_INFO->interaction);
+    if(_cpu_interaction == nullptr) {
+        OX_LOG(Logger::LOG_WARNING, "CUDARaspberryInteraction: could not find CPU RaspberryInteraction "
+               "via CONFIG_INFO — RaspberryPatchyBonds observable will be stale in CUDA mode");
+    }
 }
 
 void CUDARaspberryInteraction::compute_forces(CUDABaseList *lists, c_number4 *d_poss,
@@ -971,4 +984,29 @@ void CUDARaspberryInteraction::compute_forces(CUDABaseList *lists, c_number4 *d_
          _tex_patch_pos, _tex_patch_ori, _tex_rep_pts, _tex_pp_int,
          _d_patch_bonds, d_box);
     CUT_CHECK_ERROR("RI_forces error");
+
+    // Download GPU bond table and decode into the CPU interaction's m_PatchyBonds so
+    // the RaspberryPatchyBonds observable reads current data instead of stale CPU-side state.
+    // cudaMemcpy is synchronous w.r.t. the device; _h_patch_bonds is pre-allocated in cuda_init().
+    if(_cpu_interaction != nullptr) {
+        CUDA_SAFE_CALL(cudaMemcpy(_h_patch_bonds.data(), _d_patch_bonds,
+                                   (size_t)_N * MAX_PATCHES * sizeof(unsigned long long),
+                                   cudaMemcpyDeviceToHost));
+        const auto &cpu_bonds = _cpu_interaction->getPatchyBonds();
+        std::vector<std::vector<RaspberryInteraction::ParticlePatch>> new_bonds(_N);
+        for(int i = 0; i < _N; i++) {
+            const int n_patches = (int)cpu_bonds[i].size();
+            new_bonds[i].resize(n_patches);
+            for(int pp = 0; pp < n_patches; pp++) {
+                unsigned long long b = _h_patch_bonds[(size_t)i * MAX_PATCHES + pp];
+                if(b == 0xFFFFFFFFFFFFFFFFULL) {
+                    new_bonds[i][pp] = {-1, -1};
+                } else {
+                    new_bonds[i][pp] = {(int)(unsigned int)(b >> 32),
+                                        (int)(unsigned int)(b & 0xFFFFFFFFULL)};
+                }
+            }
+        }
+        _cpu_interaction->set_all_patchy_bonds(std::move(new_bonds));
+    }
 }
