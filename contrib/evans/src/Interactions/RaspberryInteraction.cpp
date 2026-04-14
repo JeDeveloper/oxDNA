@@ -504,7 +504,7 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
         for (int j = 0; j < m_RepulsionPoints.size(); j++) {
             // max possible repulsion dist =
             // max distance between the repulsion points + the sum of the distances of the points from
-            // the particle center
+            // the particle centery
             number r = sqrt(m_RepulsionDistSqrSumMaxs[{i, j}]);
             r += sqrt(std::get<REPULSION_COORDS>(m_RepulsionPoints[i]).norm());
             r += sqrt(std::get<REPULSION_COORDS>(m_RepulsionPoints[j]).norm());

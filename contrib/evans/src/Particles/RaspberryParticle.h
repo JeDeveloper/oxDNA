@@ -19,7 +19,7 @@ public:
         }
     }
 
-    virtual bool is_rigid_body() {
+    bool is_rigid_body() const override {
         return true;
     }
 protected:
