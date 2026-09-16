@@ -945,12 +945,13 @@ number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseP
                     // compute ( r^2 )^4 / alpha
                     // alpha ** 10
                     number alpha_exp = std::get<PP_INT_ALPHA_POW>(m_PatchPatchInteractions[{ppatch_tid, qpatch_tid}]);
+                    number pp_e_cut = std::get<PP_E_CUT>(m_PatchPatchInteractions[{ppatch_tid, qpatch_tid}]);
                     // cocmpute r^8 / a^10 here so we can use it for forces later
                     number r8b10;
                     number exp_part = eps * compute_energy(patch_dist_sqr, alpha_exp, r8b10);
 
                     // keep exp_part seperate so it can be used in force calculation
-                    number e_ij = exp_part;
+                    number e_ij;
 
 
                     // one-axis angle modulation
@@ -970,10 +971,10 @@ number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseP
 
                     fa1 =  narrow_type.V_mod(ta1);
                     fb1 =  narrow_type.V_mod(tb1) ;
-                    f1 =  -eps * (exp_part - _patch_E_cut);
-                    number angmod = f1 * fa1 * fb1;
+                    f1 =  eps * (exp_part - pp_e_cut);
+                    number angmod = fa1 * fb1;
                     assert(angmod >= 0 && angmod < 1.001);
-                    e_ij *= angmod;
+                    e_ij = f1 * angmod;
 
 
                     e_2patch += e_ij;
@@ -982,7 +983,7 @@ number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseP
 
                         number f1D = (5 * exp_part * r8b10);
 
-                        LR_vector tmp_force = patch_dist * f1D;
+                        LR_vector tmp_force = patch_dist * (f1D * angmod);
                         LR_vector torquep, torqueq;
                         number fa1Dsin = narrow_type.V_modDsin(ta1);
                         number fb1Dsin = narrow_type.V_modDsin(tb1);
@@ -1149,7 +1150,7 @@ number RaspberryInteraction::compute_energy(number patch_dist_sqr, number alpha_
     // exponential factor (for debugging)
     r8b10 = patch_dist_sqr * patch_dist_sqr * patch_dist_sqr * patch_dist_sqr / alpha_exp;
     // exponential part = -1.001 e^((r/alpha)
-    return  -1.001 * exp(-r8b10 * patch_dist_sqr);
+    return  -1.001 * exp(-0.5 * r8b10 * patch_dist_sqr);
 }
 
 /**

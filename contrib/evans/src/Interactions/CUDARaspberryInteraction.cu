@@ -43,8 +43,6 @@ __constant__ bool  MD_angmod[1];
 // NarrowType parameters for angular modulation
 __constant__ float MD_narrow_t0[1], MD_narrow_ts[1], MD_narrow_tc[1],
                    MD_narrow_a[1],  MD_narrow_b[1];
-// Global patchy energy cut (computed from default alpha in RaspberryInteraction::init)
-__constant__ float MD_patch_E_cut[1];
 // Bond energy threshold (m_nPatchyBondEnergyCutoff, default -0.1)
 __constant__ float MD_bond_energy_cut[1];
 
@@ -104,7 +102,7 @@ float _V_modDsin(float t, float t0, float ts, float tc, float a, float b) {
 __device__ __forceinline__
 c_number _compute_patch_energy(c_number dist_sqr, c_number alpha_pow, c_number &r8b10) {
     r8b10 = (dist_sqr * dist_sqr * dist_sqr * dist_sqr) / alpha_pow;
-    return (c_number) -1.001 * exp(-r8b10 * dist_sqr);
+    return (c_number) -1.001 * exp(-0.5 * r8b10 * dist_sqr);
 }
 
 /* ============================================================
@@ -404,6 +402,7 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
             c_number eps          = pp_int.x;
             c_number alpha_pow    = pp_int.y;
             c_number max_dist_sqr = pp_int.z;
+            c_number e_cutoff     = pp_int.w;
 
             if (eps == 0.f) continue;
 
@@ -438,8 +437,6 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
             c_number exp_part = eps * E0;
 
             c_number f1D         = 5.f * exp_part * r8b10;
-            // tmp_force = radial force direction (used for radial torque contribution)
-            c_number4 tmp_force_rad = patch_dist * f1D;
 
             // ---------- angular modulation ----------
             // cosa1 = p_patch_a1 · r_hat   (angle of p's patch a1 w.r.t. centre-centre vector)
@@ -459,13 +456,16 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
             c_number fb1 = _V_mod(tb1, MD_narrow_t0[0], MD_narrow_ts[0],
                                   MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
 
-            // f1 = -eps * (exp_part - _patch_E_cut)
-            // This is the angular modulation scaling (positive at binding distances)
-            c_number f1      = -eps * (exp_part - MD_patch_E_cut[0]);
-            c_number angmod  = f1 * fa1 * fb1;
-            c_number e_ij    = exp_part * angmod;
+            // f1 = eps * (exp_part - e_cutoff), using this patch-pair's own cutoff
+            c_number f1      = eps * (exp_part - e_cutoff);
+            c_number angmod  = fa1 * fb1;
+            c_number e_ij    = f1 * angmod;
 
             F.w += e_ij;
+
+            // tmp_force = radial force direction, scaled by the angular factor
+            // (used for radial torque contribution)
+            c_number4 tmp_force_rad = patch_dist * (f1D * angmod);
 
             // ---------- forces and torques ----------
             c_number fa1Dsin = _V_modDsin(ta1, MD_narrow_t0[0], MD_narrow_ts[0],
@@ -643,6 +643,7 @@ void RI_update_bonds(c_number4 *poss, GPU_quat *orientations,
                 c_number eps          = pp_int.x;
                 c_number alpha_pow    = pp_int.y;
                 c_number max_dist_sqr = pp_int.z;
+                c_number e_cutoff     = pp_int.w;
 
                 if (eps == 0.f) continue;
 
@@ -688,8 +689,8 @@ void RI_update_bonds(c_number4 *poss, GPU_quat *orientations,
                                             MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
                     c_number fb1   = _V_mod(tb1, MD_narrow_t0[0], MD_narrow_ts[0],
                                             MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
-                    c_number f1    = -eps * (exp_part - MD_patch_E_cut[0]);
-                    e_pair = exp_part * f1 * fa1 * fb1;
+                    c_number f1    = eps * (exp_part - e_cutoff);
+                    e_pair = f1 * fa1 * fb1;
                 } else {
                     e_pair = exp_part;
                 }
@@ -751,7 +752,7 @@ void CUDARaspberryInteraction::cuda_init(int N) {
     RaspberryInteraction::read_topology(&N_strands, particles);
     for (auto p : particles) delete p;
 
-    RaspberryInteraction::init(); // sets _patch_E_cut etc.
+    RaspberryInteraction::init(); // computes _patch_E_cut (diagnostic only, see PP_E_CUT below)
 
     // ---- Sanity checks ----
     int N_species = (int)m_ParticleTypes.size();
@@ -834,9 +835,6 @@ void CUDARaspberryInteraction::cuda_init(int N) {
     CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_narrow_a,  &na,  sizeof(float)));
     CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_narrow_b,  &nb,  sizeof(float)));
 
-    float e_cut_host = (float)_patch_E_cut;
-    CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_patch_E_cut, &e_cut_host, sizeof(float)));
-
     // ---- Per-species patch/repulsion counts and patch type IDs ----
     {
         int h_N_patches[MAX_SPECIES]  = {};
@@ -913,7 +911,7 @@ void CUDARaspberryInteraction::cuda_init(int N) {
     }
 
     // ---- Upload patch-pair interaction matrix as float4 texture ----
-    // Layout: h_pp_int[p_type_id * MAX_PATCH_TYPES + q_type_id] = (eps, alpha_pow, max_dist_sqr, 0)
+    // Layout: h_pp_int[p_type_id * MAX_PATCH_TYPES + q_type_id] = (eps, alpha_pow, max_dist_sqr, e_cutoff)
     {
         int sz = MAX_PATCH_TYPES * MAX_PATCH_TYPES;
         std::vector<float4> h_pp(sz, make_float4(0,0,0,0));
@@ -925,11 +923,12 @@ void CUDARaspberryInteraction::cuda_init(int N) {
             float eps      = (float)std::get<PP_INT_EPS>      (pp);
             float alphapow = (float)std::get<PP_INT_ALPHA_POW>(pp);
             float maxdsqr  = (float)std::get<PP_MAX_DIST_SQR> (pp);
+            float ecutoff  = (float)std::get<PP_E_CUT>        (pp);
 
             if (pi < MAX_PATCH_TYPES && pj < MAX_PATCH_TYPES) {
-                h_pp[pi * MAX_PATCH_TYPES + pj] = make_float4(eps, alphapow, maxdsqr, 0.f);
+                h_pp[pi * MAX_PATCH_TYPES + pj] = make_float4(eps, alphapow, maxdsqr, ecutoff);
                 // Interactions are symmetric: also fill [pj][pi]
-                h_pp[pj * MAX_PATCH_TYPES + pi] = make_float4(eps, alphapow, maxdsqr, 0.f);
+                h_pp[pj * MAX_PATCH_TYPES + pi] = make_float4(eps, alphapow, maxdsqr, ecutoff);
             }
         }
 

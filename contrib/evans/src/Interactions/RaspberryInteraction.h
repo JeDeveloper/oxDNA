@@ -297,7 +297,7 @@ public:
     virtual int get_N_from_topology();
     virtual void check_input_sanity(std::vector<BaseParticle *> &particles);
 
-    int getPatchBondEnergyCutoff() const {
+    number getPatchBondEnergyCutoff() const {
         return m_nPatchyBondEnergyCutoff;
     }
 
