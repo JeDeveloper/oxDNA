@@ -98,6 +98,12 @@ void BaseInteraction::get_settings(input_file &inp) {
 		getInputNumber(&inp, "generate_bonded_cutoff", &_generate_bonded_cutoff, 0);
 		OX_LOG(Logger::LOG_INFO, "The generator will try to take into account bonded interactions by choosing distances between bonded neighbours no larger than %lf", _generate_bonded_cutoff);
 	}
+
+	// note that the same key is read independently by CUDABaseInteraction
+	getInputBool(&inp, "stress_tensor_no_kinetic_part", &_stress_tensor_no_kinetic_part, 0);
+	if(_stress_tensor_no_kinetic_part) {
+		OX_LOG(Logger::LOG_INFO, "The stress tensor will not contain the kinetic contribution, but only the configurational one");
+	}
 }
 
 number BaseInteraction::get_rcut() const {
@@ -257,17 +263,19 @@ void BaseInteraction::compute_standard_stress_tensor() {
 			}
 		}
 
-		LR_vector &vel = p->vel;
-		StressTensor kinetic_stress = {
-			SQR(vel.x),
-			SQR(vel.y),
-			SQR(vel.z),
-			vel.x * vel.y,
-			vel.x * vel.z,
-			vel.y * vel.z
-		};
-		for(uint k = 0; k < kinetic_stress.size(); k++) {
-			_particle_stress_tensors[p->index][k] += kinetic_stress[k];
+		if(!_stress_tensor_no_kinetic_part) {
+			LR_vector &vel = p->vel;
+			StressTensor kinetic_stress = {
+				SQR(vel.x),
+				SQR(vel.y),
+				SQR(vel.z),
+				vel.x * vel.y,
+				vel.x * vel.z,
+				vel.y * vel.z
+			};
+			for(uint k = 0; k < kinetic_stress.size(); k++) {
+				_particle_stress_tensors[p->index][k] += kinetic_stress[k];
+			}
 		}
 	}
 
@@ -294,12 +302,15 @@ void BaseInteraction::reset_stress_tensor() {
 	std::fill(_stress_tensor.begin(), _stress_tensor.end(), 0.);
 	for(auto p : CONFIG_INFO->particles()) {
 		StressTensor &particle_stress = _particle_stress_tensors[p->index];
-		particle_stress[0] += SQR(p->vel.x);
-		particle_stress[1] += SQR(p->vel.y);
-		particle_stress[2] += SQR(p->vel.z);
-		particle_stress[3] += p->vel.x * p->vel.y;
-		particle_stress[4] += p->vel.x * p->vel.z;
-		particle_stress[5] += p->vel.y * p->vel.z;
+
+		if(!_stress_tensor_no_kinetic_part) {
+			particle_stress[0] += SQR(p->vel.x);
+			particle_stress[1] += SQR(p->vel.y);
+			particle_stress[2] += SQR(p->vel.z);
+			particle_stress[3] += p->vel.x * p->vel.y;
+			particle_stress[4] += p->vel.x * p->vel.z;
+			particle_stress[5] += p->vel.y * p->vel.z;
+		}
 
 		_stress_tensor[0] += particle_stress[0];
 		_stress_tensor[1] += particle_stress[1];
@@ -311,7 +322,8 @@ void BaseInteraction::reset_stress_tensor() {
 
 	_has_particle_stress_tensors = true;
 	_has_stress_tensor = true;
-	_stress_tensor_step = CONFIG_INFO->curr_step;
+	// We set the step to the next one because the stress tensor is relative to the next integration step, not the current one.
+	_stress_tensor_step = CONFIG_INFO->curr_step + 1;
 }
 
 void BaseInteraction::set_stress_tensor(StressTensor st) {
@@ -334,7 +346,7 @@ StressTensor BaseInteraction::stress_tensor() const {
 		throw oxDNAException("Stress tensor requested but not initialised");
 	}
 
-	if(_stress_tensor_step != CONFIG_INFO->curr_step) {
+	if(CONFIG_INFO->curr_step > 0 && _stress_tensor_step != CONFIG_INFO->curr_step) {
 		throw oxDNAException(
 			"Stress tensor was last updated at step %lld but the current step is %lld. "
 			"If running a CUDA simulation, make sure CUDA_update_stress_tensor_every "
@@ -358,7 +370,7 @@ const std::vector<StressTensor> &BaseInteraction::particle_stress_tensors() cons
 			"ensure CUDA_update_stress_tensor_every divides the observable's output interval.");
 	}
 
-	if(_stress_tensor_step != CONFIG_INFO->curr_step) {
+	if(CONFIG_INFO->curr_step > 0 && _stress_tensor_step != CONFIG_INFO->curr_step) {
 		throw oxDNAException(
 			"Particle stress tensors were last updated at step %lld but the current step is %lld. "
 			"If running a CUDA simulation, make sure CUDA_update_stress_tensor_every "
