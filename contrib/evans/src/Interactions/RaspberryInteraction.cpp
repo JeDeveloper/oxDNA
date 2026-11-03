@@ -354,16 +354,20 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
         for (int i = 0; i < particle_type_lines.size(); i++) {
             std::stringstream ss(particle_type_lines[i].substr(2, particle_type_lines[i].size() - 2));
             int iParticleType;
+            int iInstanceCount;
             std::string patch_id_strs, interaction_pt_id_strs;
-            if (!(ss >> iParticleType >> std::get<PTYPE_INST_COUNT>(m_ParticleTypes[iParticleType]) >> patch_id_strs)) {
+            // read into locals first: the type ID must be range-checked before it is used as an index
+            if (!(ss >> iParticleType >> iInstanceCount >> patch_id_strs)) {
                 throw oxDNAException("Invalid particle type str `" + particle_type_lines[i] + "`!");
             }
+            if (iParticleType < 0 || iParticleType >= static_cast<int>(m_ParticleTypes.size())) {
+                throw oxDNAException("Invalid particle type ID %d in `%s` (topology has %d particle types)",
+                                     iParticleType, particle_type_lines[i].c_str(), static_cast<int>(m_ParticleTypes.size()));
+            }
+            std::get<PTYPE_INST_COUNT>(m_ParticleTypes[iParticleType]) = iInstanceCount;
             if (!(ss >> interaction_pt_id_strs)) {
                 OX_LOG(Logger::LOG_WARNING, "Particle type str `%s` does not specify interaction points! Defaulting to none.", particle_type_lines[i].c_str());
                 interaction_pt_id_strs = "";
-            }
-            if (iParticleType >= m_ParticleTypes.size()) {
-                throw oxDNAException("Invalid particle type ID %d", iParticleType);
             }
             // assign particle type
             std::get<PTYPE_ID>(m_ParticleTypes[iParticleType]) = iParticleType;
@@ -373,14 +377,21 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             for (std::string &sz: patch_id_strs_list) {
                 int patch = std::stoi(sz);
                 if (patch >  -1) { // skip "dummy" patch -1
-                    assert(patch < static_cast<int>(m_PatchesTypes.size()));
+                    // not an assert: release builds define NDEBUG, which would let a bad ID index out of bounds
+                    if (patch >= static_cast<int>(m_PatchesTypes.size())) {
+                        throw oxDNAException("Particle type %d references patch %d, but there are only %d patch types",
+                                             iParticleType, patch, static_cast<int>(m_PatchesTypes.size()));
+                    }
                     std::get<PTYPE_PATCH_IDS>(m_ParticleTypes[iParticleType]).push_back(patch);
                 }
             }
             // process interaction points
             for (std::string &sz: int_pt_strs_list) {
                 int repulsionPt = std::stoi(sz);
-                assert(repulsionPt < m_RepulsionPoints.size());
+                if (repulsionPt < 0 || repulsionPt >= static_cast<int>(m_RepulsionPoints.size())) {
+                    throw oxDNAException("Particle type %d references repulsion point %d, but there are only %d repulsion points",
+                                         iParticleType, repulsionPt, static_cast<int>(m_RepulsionPoints.size()));
+                }
                 std::get<PTYPE_REP_PTS>(m_ParticleTypes[iParticleType]).push_back(repulsionPt);
             }
             // TODO: operations
