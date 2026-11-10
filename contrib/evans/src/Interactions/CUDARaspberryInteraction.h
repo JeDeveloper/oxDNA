@@ -48,13 +48,16 @@ protected:
     // Stores packed (partner_particle << 32 | partner_patch), or BOND_UNBOUND if free.
     unsigned long long *_d_patch_bonds = nullptr;
 
-    // Host-side mirror of _d_patch_bonds, downloaded each step in compute_forces().
-    // Decoded and pushed into _cpu_interaction->m_PatchyBonds each step.
+    // Host-side staging buffer for _d_patch_bonds, used by download_bonds_to_cpu().
     std::vector<unsigned long long> _h_patch_bonds;
 
     // Pointer to the CPU RaspberryInteraction (config_info->interaction), cached in cuda_init().
-    // Used to update its m_PatchyBonds from the GPU bond table each step.
+    // Its m_PatchyBonds is what observables and host-side energy computations read; it is
+    // marked stale after every force computation and only downloaded when something reads it.
     RaspberryInteraction *_cpu_interaction = nullptr;
+
+    // downloads the GPU bond table and stores it in _cpu_interaction's m_PatchyBonds
+    void download_bonds_to_cpu();
 
 public:
     // MAX_PATCHES = 24 fits a cube with all 6 faces converted to 4 teeth each

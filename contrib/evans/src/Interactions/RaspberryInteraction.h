@@ -9,6 +9,7 @@
 #define RASPBERRYINTERACTION_H
 
 #include "Interactions/BaseInteraction.h"
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -216,6 +217,24 @@ protected:
     // each item in the outer list of particles, the inner list is of patches on the particles
     std::vector<std::vector<ParticlePatch>> m_PatchyBonds;
 
+    // When the forces are computed elsewhere (CUDARaspberryInteraction keeps the bond table on the GPU),
+    // m_PatchyBonds is only brought up to date when something on the host reads it, rather than every step:
+    // m_BondSync pulls the current bond table into m_PatchyBonds, and m_BondsStale says whether it has
+    // changed since the last pull. Both are unset/false for a plain CPU simulation.
+    std::function<void()> m_BondSync;
+    mutable bool m_BondsStale = false;
+    // pulls the bond table through m_BondSync if it is stale; call before any host-side read of m_PatchyBonds.
+    // inline so the common case (a CPU simulation, never stale) is a single bool test
+    void ensure_bonds_current() const {
+        if (m_BondsStale) {
+            // clear first: the sync function reads the bond table's shape through getPatchyBonds()
+            m_BondsStale = false;
+            if (m_BondSync) {
+                m_BondSync();
+            }
+        }
+    }
+
     // patch color interactions
 
 //    std::unordered_map<std::pair<int, int>, number,  UnorderedPairHash, UnorderedPairEqual> m_PatchColorInteractions;
@@ -326,12 +345,22 @@ public:
     void set_bound_to(int p, int ppatch_idx, int q, int qpatch_idx);
     void clear_bound_to(int p, int ppatch_idx);
     const std::vector< std::vector< ParticlePatch>>& getPatchyBonds() const {
+        ensure_bonds_current();
         return m_PatchyBonds;
     }
     const std::vector<ParticlePatch>& getBondsFor(int idx) const;
 
-    // Called by CUDARaspberryInteraction each step to push GPU bond state into this object.
-    // Without this, m_PatchyBonds is only updated during check_energy_every CPU recomputation.
+    // Used by CUDARaspberryInteraction to keep this (host-side) object's m_PatchyBonds in step with the GPU
+    // bond table. set_bond_sync() registers the function that pulls the table in (or clears it, with nullptr);
+    // mark_bonds_stale() is called after every GPU force computation; set_all_patchy_bonds() is what the
+    // registered function uses to store the pulled table.
+    void set_bond_sync(std::function<void()> sync) {
+        m_BondSync = std::move(sync);
+        m_BondsStale = static_cast<bool>(m_BondSync);
+    }
+    void mark_bonds_stale() {
+        m_BondsStale = true;
+    }
     void set_all_patchy_bonds(std::vector<std::vector<ParticlePatch>> bonds) {
         m_PatchyBonds = std::move(bonds);
     }

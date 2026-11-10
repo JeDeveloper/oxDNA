@@ -715,6 +715,12 @@ CUDARaspberryInteraction::CUDARaspberryInteraction() :
         CUDABaseInteraction(), RaspberryInteraction() {}
 
 CUDARaspberryInteraction::~CUDARaspberryInteraction() {
+    // the CPU interaction's sync function points at this object. The CPU interaction is still alive here:
+    // MD_CUDABackend destroys its CUDABaseBackend base (which owns this) before its MDBackend base (which
+    // owns the CPU interaction)
+    if (_cpu_interaction != nullptr) {
+        _cpu_interaction->set_bond_sync(nullptr);
+    }
     if (_d_patch_pos) {
         CUDA_SAFE_CALL(cudaFree(_d_patch_pos));
         cudaDestroyTextureObject(_tex_patch_pos);
@@ -951,17 +957,43 @@ void CUDARaspberryInteraction::cuda_init(int N) {
         CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_bond_energy_cut, &bond_e_cut, sizeof(float)));
     }
 
-    // Pre-allocate host mirror for bond table (avoids per-step malloc in compute_forces).
+    // Pre-allocate the host staging buffer for the bond table.
     _h_patch_bonds.assign((size_t)N * MAX_PATCHES, 0xFFFFFFFFFFFFFFFFULL);
 
-    // Cache a pointer to the CPU RaspberryInteraction so compute_forces() can push
-    // updated bond data into it each step (m_PatchyBonds is protected, but we are a
-    // derived class so we can access it on another RaspberryInteraction* via the setter).
+    // Cache a pointer to the CPU RaspberryInteraction and register download_bonds_to_cpu() with it,
+    // so its bond table (read by RaspberryPatchyBonds and host-side energy computations) is pulled from
+    // the GPU on demand instead of after every step.
     _cpu_interaction = dynamic_cast<RaspberryInteraction *>(CONFIG_INFO->interaction);
     if(_cpu_interaction == nullptr) {
         OX_LOG(Logger::LOG_WARNING, "CUDARaspberryInteraction: could not find CPU RaspberryInteraction "
                "via CONFIG_INFO — RaspberryPatchyBonds observable will be stale in CUDA mode");
+    } else {
+        _cpu_interaction->set_bond_sync([this]() { download_bonds_to_cpu(); });
     }
+}
+
+void CUDARaspberryInteraction::download_bonds_to_cpu() {
+    // cudaMemcpy is synchronous w.r.t. the device, so this waits for the last force computation
+    CUDA_SAFE_CALL(cudaMemcpy(_h_patch_bonds.data(), _d_patch_bonds,
+                               (size_t)_N * MAX_PATCHES * sizeof(unsigned long long),
+                               cudaMemcpyDeviceToHost));
+    // shape only; the caller (RaspberryInteraction::ensure_bonds_current) has already cleared the stale flag
+    const auto &cpu_bonds = _cpu_interaction->getPatchyBonds();
+    std::vector<std::vector<RaspberryInteraction::ParticlePatch>> new_bonds(_N);
+    for(int i = 0; i < _N; i++) {
+        const int n_patches = (int)cpu_bonds[i].size();
+        new_bonds[i].resize(n_patches);
+        for(int pp = 0; pp < n_patches; pp++) {
+            unsigned long long b = _h_patch_bonds[(size_t)i * MAX_PATCHES + pp];
+            if(b == 0xFFFFFFFFFFFFFFFFULL) {
+                new_bonds[i][pp] = {-1, -1};
+            } else {
+                new_bonds[i][pp] = {(int)(unsigned int)(b >> 32),
+                                    (int)(unsigned int)(b & 0xFFFFFFFFULL)};
+            }
+        }
+    }
+    _cpu_interaction->set_all_patchy_bonds(std::move(new_bonds));
 }
 
 void CUDARaspberryInteraction::compute_forces(CUDABaseList *lists, c_number4 *d_poss,
@@ -986,28 +1018,10 @@ void CUDARaspberryInteraction::compute_forces(CUDABaseList *lists, c_number4 *d_
          _d_patch_bonds, d_box);
     CUT_CHECK_ERROR("RI_forces error");
 
-    // Download GPU bond table and decode into the CPU interaction's m_PatchyBonds so
-    // the RaspberryPatchyBonds observable reads current data instead of stale CPU-side state.
-    // cudaMemcpy is synchronous w.r.t. the device; _h_patch_bonds is pre-allocated in cuda_init().
+    // The GPU bond table has changed: the CPU interaction's copy is now stale, and is downloaded
+    // (download_bonds_to_cpu) only when an observable or host-side energy computation reads it.
+    // Downloading here every step forced a device sync and a host-side rebuild per step (~15% of runtime).
     if(_cpu_interaction != nullptr) {
-        CUDA_SAFE_CALL(cudaMemcpy(_h_patch_bonds.data(), _d_patch_bonds,
-                                   (size_t)_N * MAX_PATCHES * sizeof(unsigned long long),
-                                   cudaMemcpyDeviceToHost));
-        const auto &cpu_bonds = _cpu_interaction->getPatchyBonds();
-        std::vector<std::vector<RaspberryInteraction::ParticlePatch>> new_bonds(_N);
-        for(int i = 0; i < _N; i++) {
-            const int n_patches = (int)cpu_bonds[i].size();
-            new_bonds[i].resize(n_patches);
-            for(int pp = 0; pp < n_patches; pp++) {
-                unsigned long long b = _h_patch_bonds[(size_t)i * MAX_PATCHES + pp];
-                if(b == 0xFFFFFFFFFFFFFFFFULL) {
-                    new_bonds[i][pp] = {-1, -1};
-                } else {
-                    new_bonds[i][pp] = {(int)(unsigned int)(b >> 32),
-                                        (int)(unsigned int)(b & 0xFFFFFFFFULL)};
-                }
-            }
-        }
-        _cpu_interaction->set_all_patchy_bonds(std::move(new_bonds));
+        _cpu_interaction->mark_bonds_stale();
     }
 }

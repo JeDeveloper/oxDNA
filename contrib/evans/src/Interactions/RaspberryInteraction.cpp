@@ -724,6 +724,8 @@ void RaspberryInteraction::check_input_sanity(std::vector<BaseParticle *> &parti
 }
 
 void RaspberryInteraction::begin_energy_computation() {
+    // an energy computation reads (and may update) the patch locks, so start from the current bond table
+    ensure_bonds_current();
     // this is the place to update particle states
     // compared to the particle-particle computations this is relatively computationally light
     // there may be a faster way to go through these but for now we'll just check every possible operation on every particle, and optimize later if needed
@@ -1178,6 +1180,8 @@ bool RaspberryInteraction::patches_can_interact(BaseParticle *p,
                                                 BaseParticle *q,
                                                 int ppatch_idx,
                                                 int qpatch_idx) const {
+    // covers pair_interaction() calls made without begin_energy_computation() (e.g. per-pair observables)
+    ensure_bonds_current();
 
     const Patch& ppatch_type = getParticlePatchType(p, ppatch_idx);
     const Patch& qpatch_type = getParticlePatchType(q, qpatch_idx);
@@ -1279,6 +1283,7 @@ void RaspberryInteraction::clear_bound_to(int p, int ppatch_idx) {
 }
 
 const std::vector<RaspberryInteraction::ParticlePatch> &RaspberryInteraction::getBondsFor(int idx) const {
+    ensure_bonds_current();
     assert(idx < m_PatchyBonds.size());
     assert(idx > -1);
     return m_PatchyBonds[idx];
