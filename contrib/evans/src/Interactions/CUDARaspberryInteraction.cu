@@ -456,8 +456,9 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
             c_number fb1 = _V_mod(tb1, MD_narrow_t0[0], MD_narrow_ts[0],
                                   MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
 
-            // f1 = eps * (exp_part - e_cutoff), using this patch-pair's own cutoff
-            c_number f1      = eps * (exp_part - e_cutoff);
+            // f1 = eps * (E0 - e_cutoff), using this patch-pair's own cutoff.
+            // exp_part already carries eps, so only the cutoff is scaled here (see RaspberryInteraction.cpp)
+            c_number f1      = exp_part - eps * e_cutoff;
             c_number angmod  = fa1 * fb1;
             c_number e_ij    = f1 * angmod;
 
@@ -689,7 +690,8 @@ void RI_update_bonds(c_number4 *poss, GPU_quat *orientations,
                                             MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
                     c_number fb1   = _V_mod(tb1, MD_narrow_t0[0], MD_narrow_ts[0],
                                             MD_narrow_tc[0], MD_narrow_a[0], MD_narrow_b[0]);
-                    c_number f1    = eps * (exp_part - e_cutoff);
+                    // must match _patchy_angmod_body: exp_part already carries eps
+                    c_number f1    = exp_part - eps * e_cutoff;
                     e_pair = f1 * fa1 * fb1;
                 } else {
                     e_pair = exp_part;

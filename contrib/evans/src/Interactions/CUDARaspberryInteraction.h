@@ -57,10 +57,11 @@ protected:
     RaspberryInteraction *_cpu_interaction = nullptr;
 
 public:
-    static const int MAX_PATCHES     = 20;
+    // MAX_PATCHES = 24 fits a cube with all 6 faces converted to 4 teeth each
+    static const int MAX_PATCHES     = 24;
     static const int MAX_REP_PTS     = 30;
     static const int MAX_SPECIES     = 16;
-    static const int MAX_PATCH_TYPES = 64;
+    static const int MAX_PATCH_TYPES = 96;
 
     CUDARaspberryInteraction();
     virtual ~CUDARaspberryInteraction();

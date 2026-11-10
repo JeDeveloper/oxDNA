@@ -982,7 +982,10 @@ number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseP
 
                     fa1 =  narrow_type.V_mod(ta1);
                     fb1 =  narrow_type.V_mod(tb1) ;
-                    f1 =  eps * (exp_part - pp_e_cut);
+                    // exp_part already carries eps, so scale only the cutoff here: f1 = eps * (E0 - E_cut).
+                    // (eps * (exp_part - pp_e_cut) would apply eps twice, making the energy, torques and
+                    // bond detection scale as eps^2 while the radial force (f1D) scales as eps.)
+                    f1 =  exp_part - eps * pp_e_cut;
                     number angmod = fa1 * fb1;
                     assert(angmod >= 0 && angmod < 1.001);
                     e_ij = f1 * angmod;
