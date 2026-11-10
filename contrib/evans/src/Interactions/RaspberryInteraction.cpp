@@ -546,9 +546,8 @@ void RaspberryInteraction::readPatchString(const std::string& patch_line) {
     if (!(ss >> fStrength)){
         throw oxDNAException("Invalid patch type str `" + patch_line + "`!");
     }
-    if (fStrength != 1.0){
-        OX_LOG(Logger::LOG_WARNING, "Patch strength is only used if you don't explicitly specify the interaction matrix");
-    }
+    // patch strength is always used: the patch-pair epsilon is
+    // (iI strength, or 1 if there's no iI matrix) * sqrt(strength_i * strength_j), see read_topology
 
     // read color
     if (!(ss >> iColor)){
