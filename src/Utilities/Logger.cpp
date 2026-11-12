@@ -49,6 +49,11 @@ void Logger::_set_stream(const char *filename) {
 		throw oxDNAException("Log file '%s' is not writable", filename);
 	}
 
+	// the Logger is a process-wide singleton: under oxpy every new manager calls this again, so close
+	// the previous log file or each simulation run in the same process leaks a file descriptor
+	if(_log_open) {
+		fclose(_log_stream);
+	}
 	_log_stream = buff;
 	_log_open = true;
 }
