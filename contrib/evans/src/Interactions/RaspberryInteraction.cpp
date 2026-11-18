@@ -83,6 +83,15 @@ void RaspberryInteraction::allocate_particles(std::vector<BaseParticle *> &parti
     int i_type = 0;
     int type_count = 0;
     for (int i = 0; i < particles.size(); i++){
+        // skip types with no instances; otherwise type_count would never match their count and every later particle
+        // would be given this type
+        while (i_type < static_cast<int>(m_ParticleTypes.size()) && std::get<PTYPE_INST_COUNT>(m_ParticleTypes[i_type]) == 0) {
+            i_type++;
+        }
+        if (i_type >= static_cast<int>(m_ParticleTypes.size())) {
+            throw oxDNAException("The topology's particle type counts add up to fewer than the %d particles",
+                                 static_cast<int>(particles.size()));
+        }
         // assign particle type
         m_ParticleList[i] = i_type;
 
@@ -369,6 +378,9 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
                 throw oxDNAException("Invalid particle type ID %d in `%s` (topology has %d particle types)",
                                      iParticleType, particle_type_lines[i].c_str(), static_cast<int>(m_ParticleTypes.size()));
             }
+            if (iInstanceCount < 0) {
+                throw oxDNAException("Negative instance count %d in `%s`", iInstanceCount, particle_type_lines[i].c_str());
+            }
             std::get<PTYPE_INST_COUNT>(m_ParticleTypes[iParticleType]) = iInstanceCount;
             if (!(ss >> interaction_pt_id_strs)) {
                 OX_LOG(Logger::LOG_WARNING, "Particle type str `%s` does not specify interaction points! Defaulting to none.", particle_type_lines[i].c_str());
@@ -414,7 +426,7 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
             readSignalPassingOperation(signal_str);
         }
         // compute signal passing probabilities
-        m_ActivationProbs.resize(m_ParticleList.size());
+        m_ActivationProbs.resize(m_ParticleTypes.size()); // indexed by particle type, not particle
         for (int iParticleType = 0; iParticleType < m_ParticleTypes.size(); iParticleType++) {
             int num_ops = std::get<PTYPE_SIGNAL_PASSING_OPS>(m_ParticleTypes[iParticleType]).size();
             m_ActivationProbs[iParticleType].resize(num_ops);
