@@ -268,6 +268,11 @@ protected:
     bool _has_read_top; // flag to avoid double-reading the top file
 
     bool patchy_angmod; // whether to use angular modulation in patchy interactions
+    // input key `no_multipatch` (default true): lock each patch to at most one partner. The lock switches a
+    // patch's other interactions off with no matching force, so MD does not conserve energy whenever a patch has
+    // more than one compatible partner in range. With false, bonds are still tracked (for observables) but never
+    // gate the energy, so it is only physical if each patch has a single compatible partner (e.g. per-tooth colours)
+    bool m_bNoMultipatch;
     NarrowType narrow_type; // parameters for angular modulation
     number _patch_E_cut;
 
@@ -319,6 +324,13 @@ public:
     number getPatchBondEnergyCutoff() const {
         return m_nPatchyBondEnergyCutoff;
     }
+
+    bool noMultipatch() const {
+        return m_bNoMultipatch;
+    }
+
+    // warns if the patch lock is on and a particle type has two patches that can bind the same patch type
+    void warn_if_lock_breaks_energy_conservation() const;
 
     void begin_energy_computation() override ;
 

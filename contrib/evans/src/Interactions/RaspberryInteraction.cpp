@@ -26,6 +26,7 @@ RaspberryInteraction::RaspberryInteraction()  : BaseInteraction(){
     m_nPatchyBondEnergyCutoff = -0.1;
     m_nDefaultAlpha = 0;
     patchy_angmod = true;
+    m_bNoMultipatch = true;
     _has_read_top = false;
     narrow_type = NARROW_TYPES[0];
 }
@@ -46,6 +47,10 @@ void RaspberryInteraction::get_settings(input_file &inp) {
     getInputNumber(&inp, "dt", &_dt, 1);
 
     getInputNumber(&inp, "PATCHY_bond_energy", &m_nPatchyBondEnergyCutoff, 0);
+    // same key and default as romano's PatchyShapeInteraction
+    getInputBool(&inp, "no_multipatch", &m_bNoMultipatch, 0);
+    OX_LOG(Logger::LOG_INFO, "(RaspberryInteraction) no_multipatch = %d: patch lock %s", (int)m_bNoMultipatch,
+           m_bNoMultipatch ? "on (one partner per patch, gates the energy)" : "off (bonds tracked for observables only)");
     // default alpha value if it isn't specified
     getInputNumber(&inp, "PATCHY_alpha", &m_nDefaultAlpha, 0);
     getInputBool(&inp, "patchy_angmod", &patchy_angmod, 0);
@@ -492,6 +497,7 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
                 e_cutoff // probably like MIN_E
             };
         }
+        warn_if_lock_breaks_energy_conservation();
         _has_read_top = true;
     }
     allocate_particles(particles);
@@ -1036,8 +1042,10 @@ number RaspberryInteraction::patchy_pt_interaction_angmod(BaseParticle *p, BaseP
             }
             // if energy is great large enough for bond
             if (e_2patch < getPatchBondEnergyCutoff()) {
-                // if bond does not alread exist
-                if (!is_bound_to(p->index, ppatch_idx, q->index, qpatch_idx)) {
+                // if the bond doesn't already exist and neither patch is bound elsewhere. (bound elsewhere is only
+                // possible with the lock off; skipping it keeps the bond table symmetric, as RI_update_bonds does)
+                if (!is_bound_to(p->index, ppatch_idx, q->index, qpatch_idx)
+                    && !patch_bound(p, ppatch_idx) && !patch_bound(q, qpatch_idx)) {
                     // set bound
                     set_bound_to(p->index, ppatch_idx, q->index, qpatch_idx);
                 }
@@ -1142,8 +1150,10 @@ number RaspberryInteraction::patchy_pt_interaction_noangmod(BaseParticle *p, Bas
             }
             // if energy is great large enough for bond
             if (e_2patch < getPatchBondEnergyCutoff()) {
-                // if bond does not alread exist
-                if (!is_bound_to(p->index, ppatch_idx, q->index, qpatch_idx)) {
+                // if the bond doesn't already exist and neither patch is bound elsewhere. (bound elsewhere is only
+                // possible with the lock off; skipping it keeps the bond table symmetric, as RI_update_bonds does)
+                if (!is_bound_to(p->index, ppatch_idx, q->index, qpatch_idx)
+                    && !patch_bound(p, ppatch_idx) && !patch_bound(q, qpatch_idx)) {
                     // set bound
                     set_bound_to(p->index, ppatch_idx, q->index, qpatch_idx);
                 }
@@ -1197,17 +1207,49 @@ bool RaspberryInteraction::patches_can_interact(BaseParticle *p,
     if (!patch_is_active(q, qpatch_type)){
         return false;
     }
-    if (patch_bound(p, ppatch_idx) && patch_bound_to(p, ppatch_idx) != std::pair<int,int>(q->index, qpatch_idx)){
-        return false;
-    }
-    // todo: make this more efficient
-    if (patch_bound(q, qpatch_idx) && patch_bound_to(q, qpatch_idx) != std::pair<int,int>(p->index, ppatch_idx)){
-        return false;
+    // patch lock: a patch bound to some other partner doesn't interact with this one. only with no_multipatch on;
+    // off, bonds never gate the energy (see m_bNoMultipatch)
+    if (m_bNoMultipatch) {
+        if (patch_bound(p, ppatch_idx) && patch_bound_to(p, ppatch_idx) != std::pair<int,int>(q->index, qpatch_idx)){
+            return false;
+        }
+        // todo: make this more efficient
+        if (patch_bound(q, qpatch_idx) && patch_bound_to(q, qpatch_idx) != std::pair<int,int>(p->index, ppatch_idx)){
+            return false;
+        }
     }
     // todo: find and report asymmetric locks
     return true;
 }
 
+
+void RaspberryInteraction::warn_if_lock_breaks_energy_conservation() const {
+    if (!m_bNoMultipatch) {
+        return;
+    }
+    // the lock only matters if some patch type can find two compatible patches on one particle type, e.g.
+    // multidentate teeth that share a colour
+    for (size_t t = 0; t < m_ParticleTypes.size(); t++) {
+        const auto &patch_ids = std::get<PTYPE_PATCH_IDS>(m_ParticleTypes[t]);
+        for (size_t x = 0; x < m_PatchesTypes.size(); x++) {
+            int n_compatible = 0;
+            for (int pid : patch_ids) {
+                if (patch_types_interact(m_PatchesTypes[pid], m_PatchesTypes[x])) {
+                    n_compatible++;
+                }
+            }
+            if (n_compatible > 1) {
+                OX_LOG(Logger::LOG_WARNING, "(RaspberryInteraction) particle type %d has %d patches that can bind "
+                       "patch type %d. With no_multipatch = 1, whenever two of them are in range of the same "
+                       "partner the one-partner lock switches interactions off without a matching force, so MD "
+                       "may not conserve energy (the system heats or cools; e.g. multidentate teeth sharing a "
+                       "colour). Check with an NVE run, or give each patch one compatible partner (e.g. per-tooth "
+                       "colours) and set no_multipatch = 0.", (int)t, n_compatible, (int)x);
+                return;
+            }
+        }
+    }
+}
 
 bool RaspberryInteraction::patch_is_active(BaseParticle* p, const Patch& patch_type) const {
     int state_var = std::get<PPATCH_STATE>(patch_type);

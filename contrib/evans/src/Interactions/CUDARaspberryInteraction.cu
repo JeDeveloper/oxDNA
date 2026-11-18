@@ -45,6 +45,9 @@ __constant__ float MD_narrow_t0[1], MD_narrow_ts[1], MD_narrow_tc[1],
                    MD_narrow_a[1],  MD_narrow_b[1];
 // Bond energy threshold (m_nPatchyBondEnergyCutoff, default -0.1)
 __constant__ float MD_bond_energy_cut[1];
+// Patch lock on/off (m_bNoMultipatch, input key no_multipatch, default true). Off: the bond table is still
+// updated by RI_update_bonds for observables, but never gates the energy/forces
+__constant__ bool  MD_no_multipatch[1];
 
 #include "CUDA/cuda_utils/CUDA_lr_common.cuh"
 
@@ -289,11 +292,13 @@ void _patchy_noangmod_body(c_number4 &ppos, c_number4 &qpos,
         };
 
         for (int qq = 0; qq < q_npatch; qq++) {
-            // Lock gate: skip if either patch is bound to a different partner
-            unsigned long long p_bond = d_patch_bonds[p_idx * CUDARaspberryInteraction::MAX_PATCHES + pp];
-            if (p_bond != BOND_UNBOUND && p_bond != pack_bond(q_idx, qq)) continue;
-            unsigned long long q_bond = d_patch_bonds[q_idx * CUDARaspberryInteraction::MAX_PATCHES + qq];
-            if (q_bond != BOND_UNBOUND && q_bond != pack_bond(p_idx, pp)) continue;
+            // Lock gate (no_multipatch only): skip if either patch is bound to a different partner
+            if (MD_no_multipatch[0]) {
+                unsigned long long p_bond = d_patch_bonds[p_idx * CUDARaspberryInteraction::MAX_PATCHES + pp];
+                if (p_bond != BOND_UNBOUND && p_bond != pack_bond(q_idx, qq)) continue;
+                unsigned long long q_bond = d_patch_bonds[q_idx * CUDARaspberryInteraction::MAX_PATCHES + qq];
+                if (q_bond != BOND_UNBOUND && q_bond != pack_bond(p_idx, pp)) continue;
+            }
 
             int q_ptid = MD_patch_type_ids[qtype][qq];
 
@@ -389,11 +394,13 @@ void _patchy_angmod_body(c_number4 &ppos, c_number4 &qpos,
         };
 
         for (int qq = 0; qq < q_npatch; qq++) {
-            // Lock gate: skip if either patch is bound to a different partner
-            unsigned long long p_bond = d_patch_bonds[p_idx * CUDARaspberryInteraction::MAX_PATCHES + pp];
-            if (p_bond != BOND_UNBOUND && p_bond != pack_bond(q_idx, qq)) continue;
-            unsigned long long q_bond = d_patch_bonds[q_idx * CUDARaspberryInteraction::MAX_PATCHES + qq];
-            if (q_bond != BOND_UNBOUND && q_bond != pack_bond(p_idx, pp)) continue;
+            // Lock gate (no_multipatch only): skip if either patch is bound to a different partner
+            if (MD_no_multipatch[0]) {
+                unsigned long long p_bond = d_patch_bonds[p_idx * CUDARaspberryInteraction::MAX_PATCHES + pp];
+                if (p_bond != BOND_UNBOUND && p_bond != pack_bond(q_idx, qq)) continue;
+                unsigned long long q_bond = d_patch_bonds[q_idx * CUDARaspberryInteraction::MAX_PATCHES + qq];
+                if (q_bond != BOND_UNBOUND && q_bond != pack_bond(p_idx, pp)) continue;
+            }
 
             int q_ptid = MD_patch_type_ids[qtype][qq];
 
@@ -832,6 +839,9 @@ void CUDARaspberryInteraction::cuda_init(int N) {
 
     bool angmod_host = patchy_angmod;
     CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_angmod, &angmod_host, sizeof(bool)));
+
+    bool no_multipatch_host = m_bNoMultipatch;
+    CUDA_SAFE_CALL(cudaMemcpyToSymbol(MD_no_multipatch, &no_multipatch_host, sizeof(bool)));
 
     // NarrowType parameters
     float nt0 = (float)narrow_type.t0, nts = (float)narrow_type.ts;
