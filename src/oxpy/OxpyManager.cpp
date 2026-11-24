@@ -133,8 +133,13 @@ void OxpyManager::print_timings() {
 void export_SimManager(py::module &m) {
 	pybind11::class_<SimManager, std::shared_ptr<SimManager>> manager(m, "SimManager");
 
-	manager.def("run_complete", &SimManager::run, R"pbdoc(
+	// release the GIL while the simulation runs, so other Python threads of this process (e.g. a multiprocessing
+	// queue's feeder thread) are not blocked for the whole run. Python-defined observables, forces etc. take it back
+	// themselves (pybind11's override macros acquire the GIL).
+	manager.def("run_complete", &SimManager::run, py::call_guard<py::gil_scoped_release>(), R"pbdoc(
         Run the simulation till completion (that is, till the simulation has run number of steps specified in the input file).
+
+        The GIL is released while the simulation runs.
 	)pbdoc");
 }
 
@@ -245,7 +250,9 @@ input: :class:`InputFile`
 		It is automatically invoked by meth:`run`, and therefore it makes sense to call it only in specific cases (*e.g.* to access simulation data from callbacks).
 	)pbdoc");
 
-	manager.def("run", &OxpyManager::run_steps, pybind11::arg("steps"), pybind11::arg("print_output") = true, R"pbdoc(
+	// see run_complete: the GIL is released while the steps run
+	manager.def("run", &OxpyManager::run_steps, pybind11::arg("steps"), pybind11::arg("print_output") = true,
+			py::call_guard<py::gil_scoped_release>(), R"pbdoc(
 		Run the simulation for the given number of steps. The second argument controls whether the simulations output (configurations and observables) should be printed or not.
 
 		Parameters
