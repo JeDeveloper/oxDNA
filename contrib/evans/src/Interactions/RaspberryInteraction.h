@@ -9,6 +9,7 @@
 #define RASPBERRYINTERACTION_H
 
 #include "Interactions/BaseInteraction.h"
+#include "RaspberryHybridTooth.h"
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -284,6 +285,46 @@ protected:
     std::unordered_set<int> m_ParticlesCanChangeState;
     std::vector<std::vector<number>> m_ActivationProbs; // indexed by particle type, then index of operation in particle type's signal passing ops
     number _dt; // the number of steps per oxDNA units, todo: read this from somewhere else, it must be stored *somewhere* else
+
+    // ---- hybridizing-lock mode (input key PATCHY_lock_model = hybrid; default classic leaves all of the above as is)
+    // Each lock (a bound patch pair from m_PatchyBonds) carries a hybridization level h in [0, 1] and has energy
+    // T * (h * V + f(h)): V is the tooth potential (RaspberryHybridTooth), f the hybridization profile of the patch
+    // pair's colours (topology `iH` lines), both in kT. Locks form, change h and dissolve only in the once-per-step
+    // hook (hybrid_step); the pair loop never changes state, so energy-only calls (observables) can't change the
+    // dynamics. Unlocked patches don't interact. Two h schemes (HYB_h_moves):
+    //   lattice (default): h = k/N on the profile's knots, Metropolis +-1 moves (free <-> k = 1 is birth/death);
+    //                      exact equilibrium for any dt and sweep count
+    //   langevin:          continuous h, overdamped Langevin with births at h0 (equilibrium has an O(dt) bias)
+    bool m_bHybrid = false;
+    bool m_HybLattice = true;
+    int m_HybSweeps = 1;          // lattice: Metropolis proposals per candidate pair per MD step
+    RaspberryHybridTooth m_Tooth;
+    number m_HybT = 0;            // simulation temperature (kT); all lock energies are multiplied by it
+    number m_HybMu = 0, m_HybH0 = 0, m_HybKappa = 1;   // langevin: m_HybKappa is the birth-rate multiplier
+    int m_HybSubsteps = 1;
+    bool m_HybFrozen = false;
+    std::string m_HybStateIn, m_HybStateOut;
+    // f(h) knots at h = k/N, k = 0..N, per pair of patch type ids
+    std::unordered_map<std::pair<int, int>, std::vector<number>, UnorderedPairHash, UnorderedPairEqual> m_HybProfiles;
+    // h per bond slot, kept identical in both slots of a lock
+    std::vector<std::vector<number>> m_LockH;
+    // candidate locks seen by the last force pass: (p, p patch idx, q, q patch idx), deduplicated by key
+    std::vector<std::tuple<int, int, int, int>> m_HybCandidates;
+    std::unordered_set<long long> m_HybCandidateKeys;
+    long long m_LastHybStep = -1;
+    double m_HybHeat = 0;         // cumulative energy exchanged with the h bath (formation, h moves, dissolution)
+
+    number hybrid_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces);
+    void hybrid_step();
+    void hybrid_step_lattice();
+    void hybrid_step_langevin();
+    number hybrid_f(const std::vector<number> &knots, number h) const;
+    number hybrid_df(const std::vector<number> &knots, number h) const;
+    // tooth energy (kT) of patch pi on p and patch qj on q at the current positions; u = uncapped value
+    number hybrid_lock_V(BaseParticle *p, int pi, BaseParticle *q, int qj, number &u) const;
+    const std::vector<number> &hybrid_profile(BaseParticle *p, int pi, BaseParticle *q, int qj) const;
+    void hybrid_read_state(const std::string &path);
+    void hybrid_write_state(const std::string &path) const;
 public:
     RaspberryInteraction();
     virtual ~RaspberryInteraction();
@@ -333,6 +374,13 @@ public:
     void warn_if_lock_breaks_energy_conservation() const;
 
     void begin_energy_computation() override ;
+    // runs once per MD step (and from stress observables): the hybrid-lock state update lives here, guarded by step
+    void begin_energy_and_force_computation() override;
+
+    bool isHybrid() const { return m_bHybrid; }
+    // h of the lock on patch patch_idx of particle idx (0 if the patch is free)
+    number getLockH(int idx, int patch_idx) const { return m_bHybrid ? m_LockH[idx][patch_idx] : 0.; }
+    double getHybridHeat() const { return m_HybHeat; }
 
     // interaction functions
     number repulsive_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces);

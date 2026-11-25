@@ -751,6 +751,9 @@ CUDARaspberryInteraction::~CUDARaspberryInteraction() {
 
 void CUDARaspberryInteraction::get_settings(input_file &inp) {
     RaspberryInteraction::get_settings(inp);
+    if (isHybrid()) {
+        throw oxDNAException("PATCHY_lock_model = hybrid is not implemented on CUDA yet; use the CPU backend");
+    }
 
     int sort_every = 0;
     getInputInt(&inp, "CUDA_sort_every", &sort_every, 0);

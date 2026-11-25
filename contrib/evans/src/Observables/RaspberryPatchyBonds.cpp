@@ -24,7 +24,14 @@ std::string RaspberryPatchyBonds::get_output_string(llint curr_step) {
                 std::set<std::pair<int,int>> bond = {{i,j}, {other_particle, other_patch}};
                 if (unique_bonds.find(bond) == unique_bonds.end()) {
                     unique_bonds.insert(bond);
-                    sz += Utils::sformat("((%d %d), (%d, %d)) ", i, j, other_particle, other_patch);
+                    if (interction->isHybrid()) {
+                        // hybrid lock mode: also the lock's hybridization level h
+                        sz += Utils::sformat("((%d %d), (%d, %d), %.6g) ", i, j, other_particle, other_patch,
+                                             interction->getLockH(i, j));
+                    }
+                    else {
+                        sz += Utils::sformat("((%d %d), (%d, %d)) ", i, j, other_particle, other_patch);
+                    }
                 }
             }
         }

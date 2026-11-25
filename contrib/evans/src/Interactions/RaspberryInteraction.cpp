@@ -31,7 +31,17 @@ RaspberryInteraction::RaspberryInteraction()  : BaseInteraction(){
     narrow_type = NARROW_TYPES[0];
 }
 
-RaspberryInteraction::~RaspberryInteraction() = default;
+RaspberryInteraction::~RaspberryInteraction() {
+    // hybrid lock mode: save the locks and their h so that a following stage can resume them (HYB_state_in)
+    if (m_bHybrid && !m_HybStateOut.empty()) {
+        try {
+            hybrid_write_state(m_HybStateOut);
+        }
+        catch (...) {
+            OX_LOG(Logger::LOG_WARNING, "Could not write the hybrid lock state to %s", m_HybStateOut.c_str());
+        }
+    }
+}
 
 /**
  * function to allocate particles
@@ -46,15 +56,25 @@ void RaspberryInteraction::get_settings(input_file &inp) {
     BaseInteraction::get_settings(inp);
     getInputNumber(&inp, "dt", &_dt, 1);
 
+    // hybridizing-lock mode (see below); read first because it skips the classic patch keys
+    std::string lock_model = "classic";
+    getInputString(&inp, "PATCHY_lock_model", lock_model, 0);
+    if (lock_model != "classic" && lock_model != "hybrid") {
+        throw oxDNAException("PATCHY_lock_model must be classic or hybrid, got `%s`", lock_model.c_str());
+    }
+    m_bHybrid = lock_model == "hybrid";
+
     getInputNumber(&inp, "PATCHY_bond_energy", &m_nPatchyBondEnergyCutoff, 0);
     // same key and default as romano's PatchyShapeInteraction
     getInputBool(&inp, "no_multipatch", &m_bNoMultipatch, 0);
-    OX_LOG(Logger::LOG_INFO, "(RaspberryInteraction) no_multipatch = %d: patch lock %s", (int)m_bNoMultipatch,
-           m_bNoMultipatch ? "on (one partner per patch, gates the energy)" : "off (bonds tracked for observables only)");
+    if (!m_bHybrid) {
+        OX_LOG(Logger::LOG_INFO, "(RaspberryInteraction) no_multipatch = %d: patch lock %s", (int)m_bNoMultipatch,
+               m_bNoMultipatch ? "on (one partner per patch, gates the energy)" : "off (bonds tracked for observables only)");
+    }
     // default alpha value if it isn't specified
     getInputNumber(&inp, "PATCHY_alpha", &m_nDefaultAlpha, 0);
     getInputBool(&inp, "patchy_angmod", &patchy_angmod, 0);
-    if (patchy_angmod){
+    if (patchy_angmod && !m_bHybrid){
         int narrow_type_num;
         if (getInputInt(&inp, "narrow_type", &narrow_type_num, 0) == KEY_FOUND) {
             if (narrow_type_num < 0 || narrow_type_num > 4) {
@@ -74,12 +94,84 @@ void RaspberryInteraction::get_settings(input_file &inp) {
             getInputNumber(&inp, "PATCHY_theta_b", &narrow_type.b, 1);
         }
     }
+
+    // hybridizing-lock mode. The default (classic) is the potential above, unchanged
+    if (m_bHybrid) {
+        // locks are exclusive by construction; the classic lock and its warnings don't apply
+        m_bNoMultipatch = false;
+        // the classic patch width is unused, but readPatchString needs a nonzero default
+        if (m_nDefaultAlpha == 0) {
+            m_nDefaultAlpha = 0.1;
+        }
+        std::string raw_T;
+        getInputString(&inp, "T", raw_T, 1);
+        m_HybT = Utils::get_temperature(raw_T);
+        RaspberryHybridTooth &t = m_Tooth;
+        getInputNumber(&inp, "HYB_d_in", &t.d_in, 1);
+        getInputNumber(&inp, "HYB_d_out", &t.d_out, 1);
+        getInputNumber(&inp, "HYB_k_in", &t.k_in, 1);
+        getInputNumber(&inp, "HYB_k_out", &t.k_out, 1);
+        getInputNumber(&inp, "HYB_k4", &t.k4, 1);
+        getInputNumber(&inp, "HYB_k_g", &t.k_g, 1);
+        getInputNumber(&inp, "HYB_g0", &t.g0, 1);
+        getInputNumber(&inp, "HYB_alpha", &t.alpha, 1);
+        getInputNumber(&inp, "HYB_eps_c", &t.eps_c, 0);
+        getInputNumber(&inp, "HYB_v_max", &t.v_max, 0);
+        getInputNumber(&inp, "HYB_v_cap_w", &t.cap_w, 0);
+        getInputNumber(&inp, "HYB_lnz_dmax", &t.lnz_dmax, 1);
+        getInputInt(&inp, "HYB_lnz_nodes", &t.lnz_nodes, 0);
+        getInputInt(&inp, "HYB_lnz_quad", &t.lnz_quad, 0);
+        std::string h_moves = "lattice";
+        getInputString(&inp, "HYB_h_moves", h_moves, 0);
+        if (h_moves != "lattice" && h_moves != "langevin") {
+            throw oxDNAException("HYB_h_moves must be lattice or langevin, got `%s`", h_moves.c_str());
+        }
+        m_HybLattice = h_moves == "lattice";
+        getInputBool(&inp, "HYB_frozen", &m_HybFrozen, 0);
+        getInputString(&inp, "HYB_state_in", m_HybStateIn, 0);
+        getInputString(&inp, "HYB_state_out", m_HybStateOut, 0);
+        m_Tooth.build();
+        if (m_HybLattice) {
+            getInputInt(&inp, "HYB_sweeps", &m_HybSweeps, 0);
+            if (m_HybSweeps < 1) {
+                throw oxDNAException("HYB_sweeps must be >= 1, got %d", m_HybSweeps);
+            }
+            OX_LOG(Logger::LOG_INFO, "(RaspberryInteraction) hybrid lock mode: T = %g, tooth cutoff %g, V_max %g kT, "
+                   "lattice h moves, %d sweep(s) per step%s", m_HybT, m_Tooth.d_cut, m_Tooth.v_max, m_HybSweeps,
+                   m_HybFrozen ? ", frozen" : "");
+        }
+        else {
+            getInputNumber(&inp, "HYB_mu", &m_HybMu, 1);
+            getInputNumber(&inp, "HYB_h0", &m_HybH0, 1);
+            if (m_HybH0 <= 0 || m_HybH0 >= 1) {
+                throw oxDNAException("HYB_h0 must be in (0, 1), got %g", m_HybH0);
+            }
+            // lock birth rate multiplier: 1 reproduces the reference equilibrium exactly (free tooth weight 1; see
+            // hybrid_step_langevin); any other value shifts each lock's free energy by -ln(scale)
+            m_HybKappa = 1.;
+            getInputNumber(&inp, "HYB_kappa_scale", &m_HybKappa, 0);
+            getInputInt(&inp, "HYB_substeps", &m_HybSubsteps, 0);
+            if (m_HybSubsteps < 1) {
+                throw oxDNAException("HYB_substeps must be >= 1, got %d", m_HybSubsteps);
+            }
+            if (m_HybMu * _dt / m_HybSubsteps / m_HybH0 > 0.05) {
+                OX_LOG(Logger::LOG_WARNING, "(RaspberryInteraction) hybrid lock births per substep aren't rare: mu dt / "
+                       "(substeps h0) = %g > 0.05. Raise HYB_substeps, or the equilibrium binding will be underestimated",
+                       m_HybMu * _dt / m_HybSubsteps / m_HybH0);
+            }
+            OX_LOG(Logger::LOG_INFO, "(RaspberryInteraction) hybrid lock mode: T = %g, tooth cutoff %g, V_max %g kT, "
+                   "langevin h moves, mu %g, h0 %g, kappa scale %g (lock free energy offset %g kT), %d h substep(s)%s",
+                   m_HybT, m_Tooth.d_cut, m_Tooth.v_max, m_HybMu, m_HybH0, m_HybKappa, -std::log(m_HybKappa),
+                   m_HybSubsteps, m_HybFrozen ? ", frozen" : "");
+        }
+    }
 }
 
 
 void RaspberryInteraction::allocate_particles(std::vector<BaseParticle *> &particles) {
     m_ParticleStates.resize(particles.size());
     m_PatchyBonds.resize(particles.size());
+    m_LockH.resize(particles.size());
     int i_type = 0;
     int type_count = 0;
     for (int i = 0; i < particles.size(); i++){
@@ -150,6 +242,7 @@ void RaspberryInteraction::allocate_particles(std::vector<BaseParticle *> &parti
             assert(ii < m_PatchyBonds[i].size());
             m_PatchyBonds[i][ii] = {-1, -1};
         }
+        m_LockH[i].assign(m_PatchyBonds[i].size(), 0.);
 
         type_count++;
         if (type_count == std::get<PTYPE_INST_COUNT>(particleType)){
@@ -234,7 +327,10 @@ number RaspberryInteraction::pair_interaction_nonbonded(BaseParticle *p,
     }
 
     e += repulsive_pt_interaction(p, q, update_forces);
-    if (patchy_angmod) {
+    if (m_bHybrid) {
+        e += hybrid_pt_interaction(p, q, update_forces);
+    }
+    else if (patchy_angmod) {
         e += patchy_pt_interaction_angmod(p, q, update_forces);
     }
     else {
@@ -289,6 +385,7 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
         std::vector<std::string> repulsion_pt_lines;
         std::vector<std::string> signal_passing_operations;
         std::vector<std::string> patch_interactions;
+        std::vector<std::string> hybrid_profile_lines;
 
         std::string sz;
         while (std::getline(topology, sz)) {
@@ -313,6 +410,9 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
                     repulsion_pt_lines.push_back(sz);
                 } else if (sz.substr(0, 2) == "iI") {
                     patch_interactions.push_back(sz);
+                } else if (sz.substr(0, 2) == "iH") {
+                    // hybridization profile f(h) of a colour pair; used only by the hybrid lock mode
+                    hybrid_profile_lines.push_back(sz);
                 }
                 else {
                     throw oxDNAException("Malformed topology! Line `" + sz + "` does not clearly convey information");
@@ -509,6 +609,43 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
                 e_cutoff // probably like MIN_E
             };
         }
+        if (m_bHybrid) {
+            // iH c1 c2 N f_1 ... f_N: f(h) in kT at h = k/N (f(0) = 0), for every patch type pair with these colours
+            for (auto &line : hybrid_profile_lines) {
+                std::stringstream ss(line.substr(2));
+                int c1, c2, n;
+                if (!(ss >> c1 >> c2 >> n) || n < 1) {
+                    throw oxDNAException("Malformed hybridization profile `" + line + "`");
+                }
+                std::vector<number> knots(n + 1, 0.);
+                for (int k = 1; k <= n; k++) {
+                    if (!(ss >> knots[k])) {
+                        throw oxDNAException("Hybridization profile `" + line + "` has fewer than N values");
+                    }
+                }
+                for (int pi = 0; pi < m_PatchesTypes.size(); pi++) {
+                    for (int pj = 0; pj < m_PatchesTypes.size(); pj++) {
+                        int ci = std::get<PPATCH_COLOR>(m_PatchesTypes[pi]), cj = std::get<PPATCH_COLOR>(m_PatchesTypes[pj]);
+                        if ((ci == c1 && cj == c2) || (ci == c2 && cj == c1)) {
+                            m_HybProfiles[{pi, pj}] = knots;
+                        }
+                    }
+                }
+            }
+            for (auto &[pp, knots] : m_HybProfiles) {
+                // the langevin birth rate assumes h0 lies in the first base pair's segment
+                if (!m_HybLattice && m_HybH0 > 1. / (knots.size() - 1)) {
+                    throw oxDNAException("HYB_h0 = %g must not exceed 1/N = %g (N base pairs of a profile)", m_HybH0,
+                                         1. / (knots.size() - 1));
+                }
+            }
+            for (auto &[pp, ppint] : m_PatchPatchInteractions) {
+                if (std::get<PP_INT_EPS>(ppint) != 0 && m_HybProfiles.find(pp) == m_HybProfiles.end()) {
+                    throw oxDNAException("Hybrid lock mode: patch types %d and %d can bind but no `iH` line gives their "
+                                         "hybridization profile", pp.first, pp.second);
+                }
+            }
+        }
         warn_if_lock_breaks_energy_conservation();
         _has_read_top = true;
     }
@@ -519,7 +656,8 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
     for (int i = 0; i < m_PatchesTypes.size(); i++) {
         for (int j = 0; j < m_PatchesTypes.size(); j++) {
             if (patch_types_interact(m_PatchesTypes[i], m_PatchesTypes[j])) {
-                number dist_sum = sqrt(std::get<PP_MAX_DIST_SQR>(m_PatchPatchInteractions[{i, j}]));
+                // hybrid mode: a lock or candidate exists out to the tooth potential's cutoff
+                number dist_sum = m_bHybrid ? m_Tooth.d_cut : sqrt(std::get<PP_MAX_DIST_SQR>(m_PatchPatchInteractions[{i, j}]));
                 dist_sum += sqrt(std::get<PPATCH_POS>(m_PatchesTypes[i]).norm());
                 dist_sum += sqrt(std::get<PPATCH_POS>(m_PatchesTypes[j]).norm());
                 if (dist_sum > _rcut) {
@@ -544,6 +682,10 @@ void RaspberryInteraction::read_topology(int *N_strands, std::vector<BaseParticl
     }
 
     _sqr_rcut = SQR(_rcut);
+
+    if (m_bHybrid && !m_HybStateIn.empty()) {
+        hybrid_read_state(m_HybStateIn);
+    }
 }
 
 void RaspberryInteraction::readPatchString(const std::string& patch_line) {
@@ -1402,6 +1544,420 @@ LR_vector parseVector(const std::string& vec){
     if(tmpi != 3)
         throw oxDNAException ("Could not parse vector %s. Aborting", vec.c_str());
     return {tmpf[0], tmpf[1], tmpf[2]};
+}
+
+// ------------------------------------------------------------------------------------------- hybrid lock mode
+
+number RaspberryInteraction::hybrid_f(const std::vector<number> &knots, number h) const {
+    int n = static_cast<int>(knots.size()) - 1;
+    number x = h * n;
+    int k = static_cast<int>(std::floor(x));
+    if (k < 0) k = 0;
+    if (k > n - 1) k = n - 1;
+    return knots[k] + (knots[k + 1] - knots[k]) * (x - k);
+}
+
+number RaspberryInteraction::hybrid_df(const std::vector<number> &knots, number h) const {
+    int n = static_cast<int>(knots.size()) - 1;
+    int k = static_cast<int>(std::floor(h * n));
+    if (k < 0) k = 0;
+    if (k > n - 1) k = n - 1;
+    return (knots[k + 1] - knots[k]) * n;
+}
+
+const std::vector<number> &RaspberryInteraction::hybrid_profile(BaseParticle *p, int pi, BaseParticle *q, int qj) const {
+    int ptid = std::get<PTYPE_PATCH_IDS>(m_ParticleTypes[p->type])[pi];
+    int qtid = std::get<PTYPE_PATCH_IDS>(m_ParticleTypes[q->type])[qj];
+    return m_HybProfiles.at({ptid, qtid});
+}
+
+number RaspberryInteraction::hybrid_lock_V(BaseParticle *p, int pi, BaseParticle *q, int qj, number &u) const {
+    LR_vector r = _box->min_image(p->pos, q->pos) + getParticlePatchPosition(q, qj) - getParticlePatchPosition(p, pi);
+    LR_vector g1, g2, g3;
+    return m_Tooth.energy(r, getParticlePatchAlign(p, pi), getParticlePatchAlign(q, qj), u, false, g1, g2, g3);
+}
+
+/**
+ * patch-patch term in hybrid lock mode. Locked pairs: energy T (h V + f(h)), forces and torques -T h grad V. Free
+ * compatible pairs with u < v_max + w are recorded as lock candidates (force passes only); nothing else changes state
+ */
+number RaspberryInteraction::hybrid_pt_interaction(BaseParticle *p, BaseParticle *q, bool update_forces) {
+    const ParticleType &p_type = m_ParticleTypes[p->type];
+    const ParticleType &q_type = m_ParticleTypes[q->type];
+    number energy = 0.;
+    for (int pi = 0; pi < std::get<PTYPE_PATCH_IDS>(p_type).size(); pi++) {
+        bool p_free = !patch_bound(p, pi);
+        for (int qj = 0; qj < std::get<PTYPE_PATCH_IDS>(q_type).size(); qj++) {
+            bool locked = is_bound_to(p->index, pi, q->index, qj);
+            if (!locked) {
+                // an unlocked compatible pair is only a candidate, recorded during force passes. Lattice moves need the
+                // candidate set to depend on positions only (not on which patches are taken), so they record pairs
+                // whose patches are locked elsewhere too; a birth proposal for them is then rejected
+                if (!update_forces || (!m_HybLattice && (!p_free || patch_bound(q, qj)))) {
+                    continue;
+                }
+                const Patch &ptype = getParticlePatchType(p, pi);
+                const Patch &qtype = getParticlePatchType(q, qj);
+                if (!patch_types_interact(ptype, qtype) || !patch_is_active(p, ptype) || !patch_is_active(q, qtype)) {
+                    continue;
+                }
+                LR_vector r = _computed_r + getParticlePatchPosition(q, qj) - getParticlePatchPosition(p, pi);
+                if (r.norm() >= SQR(m_Tooth.d_cut)) {
+                    continue;
+                }
+                number u;
+                LR_vector g1, g2, g3;
+                m_Tooth.energy(r, getParticlePatchAlign(p, pi), getParticlePatchAlign(q, qj), u, false, g1, g2, g3);
+                if (u < m_Tooth.v_max + m_Tooth.cap_w) {
+                    int a = p->index, b = q->index, ai = pi, bj = qj;
+                    if (a > b) {
+                        std::swap(a, b);
+                        std::swap(ai, bj);
+                    }
+                    long long key = (((long long) a * 4096 + ai) * (long long) (CONFIG_INFO->N() + 1) + b) * 4096 + bj;
+                    if (m_HybCandidateKeys.insert(key).second) {
+                        m_HybCandidates.emplace_back(a, ai, b, bj);
+                    }
+                }
+                continue;
+            }
+            number h = m_LockH[p->index][pi];
+            LR_vector ppatch = getParticlePatchPosition(p, pi);
+            LR_vector qpatch = getParticlePatchPosition(q, qj);
+            LR_vector ni = getParticlePatchAlign(p, pi);
+            LR_vector nj = getParticlePatchAlign(q, qj);
+            LR_vector r = _computed_r + qpatch - ppatch;
+            number u;
+            LR_vector dV_dr, dV_dni, dV_dnj;
+            number V = m_Tooth.energy(r, ni, nj, u, update_forces, dV_dr, dV_dni, dV_dnj);
+            energy += m_HybT * (h * V + hybrid_f(hybrid_profile(p, pi, q, qj), h));
+            if (update_forces) {
+                number s = m_HybT * h;
+                // r = x_q + P_j - x_p - P_i, so F_q = -s dV/dr and F_p = +s dV/dr, acting at the patch points
+                LR_vector Fq = dV_dr * (-s);
+                LR_vector Fp = dV_dr * s;
+                // normals rotate with their particle: torque -s (n x dV/dn)
+                LR_vector tau_p = ppatch.cross(Fp) - ni.cross(dV_dni) * s;
+                LR_vector tau_q = qpatch.cross(Fq) - nj.cross(dV_dnj) * s;
+                p->force += Fp;
+                q->force += Fq;
+                p->torque += p->orientationT * tau_p;
+                q->torque += q->orientationT * tau_q;
+            }
+        }
+    }
+    return energy;
+}
+
+void RaspberryInteraction::begin_energy_and_force_computation() {
+    BaseInteraction::begin_energy_and_force_computation();
+    if (m_bHybrid) {
+        hybrid_step();
+    }
+}
+
+/**
+ * the hybrid-lock state update: at most once per MD step (a force pass for stress observables, or the first step
+ * after init, repeats the step number and is skipped). Positions are current here: the integrator's first half-step
+ * and set_positions() run before the force computation that calls this
+ */
+void RaspberryInteraction::hybrid_step() {
+    if (CONFIG_INFO->curr_step == m_LastHybStep) {
+        return;
+    }
+    m_LastHybStep = CONFIG_INFO->curr_step;
+    if (m_HybFrozen) {
+        m_HybCandidates.clear();
+        m_HybCandidateKeys.clear();
+        return;
+    }
+    if (m_HybLattice) {
+        hybrid_step_lattice();
+    }
+    else {
+        hybrid_step_langevin();
+    }
+}
+
+/**
+ * lattice h moves. A candidate pair (an unlocked compatible pair within the cutoff at the last force pass, or a lock)
+ * is a chain of states free = 0, 1, ..., N (h = k/N, N the profile's base pairs) with weights
+ *   w_0 = 1,   w_k = (1/N) exp(-(k V / N + f_k))
+ * (the reference model's lock weight int_0^1 e^{-(hV + f)} dh as a right Riemann sum on the knots). Each sweep proposes
+ * k -> k +- 1 for every pair, in a random order, and accepts with min(1, w_new / w_old); 0 -> 1 (a birth) needs both
+ * patches free. Every proposal obeys detailed balance at the fixed positions, and the pair set depends on positions
+ * only, so the conditional equilibrium of the locks given the positions is exact for any dt and any sweep count
+ */
+void RaspberryInteraction::hybrid_step_lattice() {
+    auto &particles = CONFIG_INFO->particles();
+    const number vcut = m_Tooth.v_max + m_Tooth.cap_w;
+    struct LatItem {
+        int ip, pi, iq, qj;
+        number V;
+        const std::vector<number> *knots;
+        int n, k;
+        number e_start;
+    };
+    std::vector<LatItem> items;
+    auto lock_energy = [&](const LatItem &it, int k) -> number {
+        return k > 0 ? m_HybT * (k * it.V / it.n + (*it.knots)[k]) : 0.;
+    };
+    auto make_item = [&](int ip, int pi, int iq, int qj, number h) -> bool {
+        BaseParticle *p = particles[ip], *q = particles[iq];
+        number u;
+        number V = hybrid_lock_V(p, pi, q, qj, u);
+        if (u >= vcut) {
+            return false;
+        }
+        const std::vector<number> &knots = hybrid_profile(p, pi, q, qj);
+        int n = static_cast<int>(knots.size()) - 1;
+        LatItem it{ip, pi, iq, qj, V, &knots, n, 0, 0.};
+        if (h > 0) {
+            // a lock's h is k/N; one read from a langevin state file is snapped to the nearest site (the energy change
+            // goes to the heat, through e_start)
+            it.k = static_cast<int>(std::lround(h * n));
+            it.k = std::min(std::max(it.k, 1), n);
+            it.e_start = m_HybT * (h * V + hybrid_f(knots, h));
+        }
+        items.push_back(it);
+        return true;
+    };
+
+    // existing locks (each once, from its lower slot); one past the cap dissolves at once
+    for (int ip = 0; ip < particles.size(); ip++) {
+        for (int pi = 0; pi < m_PatchyBonds[ip].size(); pi++) {
+            auto [iq, qj] = m_PatchyBonds[ip][pi];
+            if (iq < 0 || iq < ip || (iq == ip && qj < pi)) {
+                continue;
+            }
+            number h = m_LockH[ip][pi];
+            if (!make_item(ip, pi, iq, qj, h)) {
+                BaseParticle *p = particles[ip], *q = particles[iq];
+                number u;
+                number V = hybrid_lock_V(p, pi, q, qj, u);
+                m_HybHeat -= m_HybT * (h * V + hybrid_f(hybrid_profile(p, pi, q, qj), h));
+                clear_bound_to(ip, pi);
+                clear_bound_to(iq, qj);
+                m_LockH[ip][pi] = 0.;
+                m_LockH[iq][qj] = 0.;
+            }
+        }
+    }
+    // unlocked candidates (the pair loop never records a pair locked to each other)
+    for (auto &[ip, pi, iq, qj] : m_HybCandidates) {
+        make_item(ip, pi, iq, qj, 0.);
+    }
+    m_HybCandidates.clear();
+    m_HybCandidateKeys.clear();
+    for (int k = static_cast<int>(items.size()) - 1; k > 0; k--) {
+        int j = static_cast<int>(drand48() * (k + 1));
+        if (j > k) j = k;
+        std::swap(items[k], items[j]);
+    }
+
+    for (int sweep = 0; sweep < m_HybSweeps; sweep++) {
+        for (auto &it : items) {
+            int kn = drand48() < 0.5 ? it.k + 1 : it.k - 1;
+            if (kn < 0 || kn > it.n) {
+                continue;
+            }
+            if (it.k == 0 && (patch_bound(particles[it.ip], it.pi) || patch_bound(particles[it.iq], it.qj))) {
+                continue;
+            }
+            // ln(w_new / w_old); the 1/N factor of w_k only enters births and deaths
+            number dlnw = -(lock_energy(it, kn) - lock_energy(it, it.k)) / m_HybT;
+            if (it.k == 0) dlnw -= std::log(static_cast<number>(it.n));
+            if (kn == 0) dlnw += std::log(static_cast<number>(it.n));
+            if (dlnw < 0 && drand48() >= std::exp(dlnw)) {
+                continue;
+            }
+            if (it.k == 0) {
+                set_bound_to(it.ip, it.pi, it.iq, it.qj);
+            }
+            else if (kn == 0) {
+                clear_bound_to(it.ip, it.pi);
+                clear_bound_to(it.iq, it.qj);
+            }
+            it.k = kn;
+        }
+    }
+
+    for (auto &it : items) {
+        m_HybHeat += lock_energy(it, it.k) - it.e_start;
+        if (it.k > 0) {
+            number h = static_cast<number>(it.k) / it.n;
+            m_LockH[it.ip][it.pi] = h;
+            m_LockH[it.iq][it.qj] = h;
+        }
+        else {
+            if (!patch_bound(particles[it.ip], it.pi)) m_LockH[it.ip][it.pi] = 0.;
+            if (!patch_bound(particles[it.iq], it.qj)) m_LockH[it.iq][it.qj] = 0.;
+        }
+    }
+}
+
+/**
+ * langevin h moves: continuous h, overdamped Langevin with HYB_substeps Euler-Maruyama substeps per MD step
+ */
+void RaspberryInteraction::hybrid_step_langevin() {
+    auto &particles = CONFIG_INFO->particles();
+    const number dts = _dt / m_HybSubsteps;
+    const number noise = std::sqrt(2. * m_HybMu * dts);
+    const number vcut = m_Tooth.v_max + m_Tooth.cap_w;
+
+    // Every pair that is locked, or a free candidate from the last force pass, is advanced together over the MD step's
+    // substeps (positions, hence V, are fixed within the step). A lock is born at h0 and dies at h = 0: a sticky-
+    // boundary diffusion with D = mu. Its stationary weight relative to the free pair is
+    //   (kappa / mu) * int_0^h0 e^{U(s)} ds * int_h0^1 e^{-U(h)} dh,  U = h V + f(h).
+    // With h0 inside the first base pair's segment U(s) = a s, a = V + f'(0+), so the birth rate
+    // kappa = mu a / (e^{a h0} - 1) makes the weight int e^{-U} dh exactly (the reference model's) for any h0.
+    // Births are tried every substep (kappa * dts << 1 is needed; a single try per MD step would undercount them).
+    struct HybItem {
+        int ip, pi, iq, qj;
+        number V, kappa, h;
+        const std::vector<number> *knots;
+        bool locked;
+        number e_start;
+    };
+    std::vector<HybItem> items;
+    auto make_item = [&](int ip, int pi, int iq, int qj, bool locked, number h) -> bool {
+        BaseParticle *p = particles[ip], *q = particles[iq];
+        number u;
+        number V = hybrid_lock_V(p, pi, q, qj, u);
+        if (u >= vcut) {
+            return false;
+        }
+        const std::vector<number> &knots = hybrid_profile(p, pi, q, qj);
+        number a = V + (knots[1] - knots[0]) * (knots.size() - 1);
+        number kappa = std::fabs(a * m_HybH0) < 1e-10 ? m_HybMu / m_HybH0 : m_HybMu * a / std::expm1(a * m_HybH0);
+        number e = locked ? m_HybT * (h * V + hybrid_f(knots, h)) : 0.;
+        items.push_back({ip, pi, iq, qj, V, m_HybKappa * kappa, h, &knots, locked, e});
+        return true;
+    };
+
+    // existing locks (each once, from its lower slot); one past the cap dissolves at once
+    for (int ip = 0; ip < particles.size(); ip++) {
+        for (int pi = 0; pi < m_PatchyBonds[ip].size(); pi++) {
+            auto [iq, qj] = m_PatchyBonds[ip][pi];
+            if (iq < 0 || iq < ip || (iq == ip && qj < pi)) {
+                continue;
+            }
+            number h = m_LockH[ip][pi];
+            if (!make_item(ip, pi, iq, qj, true, h)) {
+                BaseParticle *p = particles[ip], *q = particles[iq];
+                number u;
+                number V = hybrid_lock_V(p, pi, q, qj, u);
+                m_HybHeat -= m_HybT * (h * V + hybrid_f(hybrid_profile(p, pi, q, qj), h));
+                clear_bound_to(ip, pi);
+                clear_bound_to(iq, qj);
+                m_LockH[ip][pi] = 0.;
+                m_LockH[iq][qj] = 0.;
+            }
+        }
+    }
+    // candidates: free compatible pairs within the cutoff at the last force pass
+    for (auto &[ip, pi, iq, qj] : m_HybCandidates) {
+        if (!patch_bound(particles[ip], pi) && !patch_bound(particles[iq], qj)) {
+            make_item(ip, pi, iq, qj, false, 0.);
+        }
+    }
+    m_HybCandidates.clear();
+    m_HybCandidateKeys.clear();
+    // random order, so that competing candidates for one patch are treated alike
+    for (int k = static_cast<int>(items.size()) - 1; k > 0; k--) {
+        int j = static_cast<int>(drand48() * (k + 1));
+        if (j > k) j = k;
+        std::swap(items[k], items[j]);
+    }
+
+    for (int sub = 0; sub < m_HybSubsteps; sub++) {
+        for (auto &it : items) {
+            if (it.locked) {
+                number h_new = it.h - m_HybMu * (it.V + hybrid_df(*it.knots, it.h)) * dts + noise * Utils::gaussian();
+                // dies at h = 0; the Brownian-bridge test catches paths that touched 0 between the two points
+                // (without it the absorbing wall sits effectively ~0.58 noise below 0 and locks live too long)
+                if (h_new <= 0. || drand48() < std::exp(-2. * it.h * h_new / (noise * noise))) {
+                    it.locked = false;
+                    clear_bound_to(it.ip, it.pi);
+                    clear_bound_to(it.iq, it.qj);
+                    continue;
+                }
+                if (h_new > 1.) {
+                    h_new = 2. - h_new;
+                    if (h_new > 1.) h_new = 1.;
+                }
+                it.h = h_new;
+            }
+            else if (!patch_bound(particles[it.ip], it.pi) && !patch_bound(particles[it.iq], it.qj)
+                     && drand48() < 1. - std::exp(-it.kappa * dts)) {
+                it.locked = true;
+                it.h = m_HybH0;
+                set_bound_to(it.ip, it.pi, it.iq, it.qj);
+            }
+        }
+    }
+
+    for (auto &it : items) {
+        number e_end = it.locked ? m_HybT * (it.h * it.V + hybrid_f(*it.knots, it.h)) : 0.;
+        m_HybHeat += e_end - it.e_start;
+        number h = it.locked ? it.h : 0.;
+        if (it.locked) {
+            m_LockH[it.ip][it.pi] = h;
+            m_LockH[it.iq][it.qj] = h;
+        }
+        else if (!patch_bound(particles[it.ip], it.pi)) {
+            m_LockH[it.ip][it.pi] = 0.;
+        }
+        if (!it.locked && !patch_bound(particles[it.iq], it.qj)) {
+            m_LockH[it.iq][it.qj] = 0.;
+        }
+    }
+}
+
+void RaspberryInteraction::hybrid_read_state(const std::string &path) {
+    std::ifstream in(path);
+    if (!in.good()) {
+        throw oxDNAException("Can't read the hybrid lock state file `%s`", path.c_str());
+    }
+    std::string line;
+    int n_locks = 0;
+    while (std::getline(in, line)) {
+        line = Utils::trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        std::stringstream ss(line);
+        int p, pi, q, qj;
+        number h;
+        if (!(ss >> p >> pi >> q >> qj >> h)) {
+            throw oxDNAException("Malformed hybrid lock state line `%s` (expected: p patch q patch h)", line.c_str());
+        }
+        if (p < 0 || q < 0 || p >= (int) m_PatchyBonds.size() || q >= (int) m_PatchyBonds.size()
+            || pi < 0 || qj < 0 || pi >= (int) m_PatchyBonds[p].size() || qj >= (int) m_PatchyBonds[q].size()) {
+            throw oxDNAException("Hybrid lock state line `%s` refers to a nonexistent particle or patch", line.c_str());
+        }
+        if (h <= 0 || h > 1) {
+            throw oxDNAException("Hybrid lock state line `%s`: h must be in (0, 1]", line.c_str());
+        }
+        if (m_PatchyBonds[p][pi].first != -1 || m_PatchyBonds[q][qj].first != -1) {
+            throw oxDNAException("Hybrid lock state line `%s`: a patch is already locked", line.c_str());
+        }
+        set_bound_to(p, pi, q, qj);
+        m_LockH[p][pi] = h;
+        m_LockH[q][qj] = h;
+        n_locks++;
+    }
+    OX_LOG(Logger::LOG_INFO, "(RaspberryInteraction) read %d hybrid locks from %s", n_locks, path.c_str());
+}
+
+void RaspberryInteraction::hybrid_write_state(const std::string &path) const {
+    std::ofstream out(path);
+    out << "# hybrid locks: particle patch_idx particle patch_idx h\n";
+    for (int ip = 0; ip < m_PatchyBonds.size(); ip++) {
+        for (int pi = 0; pi < m_PatchyBonds[ip].size(); pi++) {
+            auto [iq, qj] = m_PatchyBonds[ip][pi];
+            if (iq < 0 || iq < ip || (iq == ip && qj < pi)) continue;
+            out << ip << " " << pi << " " << iq << " " << qj << " " << Utils::sformat("%.12g", m_LockH[ip][pi]) << "\n";
+        }
+    }
 }
 
 extern "C" RaspberryInteraction* make_RaspberryPatchyInteraction() {
